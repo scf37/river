@@ -131,14 +131,17 @@ def rm(file: str):
         raise Exception("Can't remove file " + file + ": " + resp.text)
 
 
+def __upload_state_fname(localFile: str, remoteFile: str):
+    key = localFile + "*" + remoteFile + "*" + str(os.path.getsize(localFile))
+    return "/data/_upload_state/" + str(hashlib.md5(key.encode('utf-8')).hexdigest())
+
+
 #
 #
 #
 def _load_upload_state(localFile: str, remoteFile: str):
-    fname = "/data/_upload_state/" + \
-            hashlib.md5(localFile + "*" + remoteFile + "*" + len(os.path.getsize(localFile)))
-
     try:
+        fname = __upload_state_fname(localFile, remoteFile)
         with open(fname, mode="r") as f:
             return yaml.load(f.read())
     except IOError:
@@ -157,17 +160,16 @@ def _save_upload_state(localFile: str, remoteFile: str, state):
     except os.error:
         pass
 
-    fname = "/data/_upload_state/" + \
-            hashlib.md5(localFile + "*" + remoteFile + "*" + len(os.path.getsize(localFile)))
-
     if state is None:
         try:
+            fname = __upload_state_fname(localFile, remoteFile)
             os.remove(fname)
         except IOError:
             pass
         return
 
     try:
+        fname = __upload_state_fname(localFile, remoteFile)
         with open(fname, mode="w") as f:
             f.write(yaml.dump(state))
     except IOError:
