@@ -264,10 +264,12 @@ def roll_full_backup(state, config):
         # need to do full backup
         drop_incremental_backup_index(name)
         start_new_full_backup()
+        save_state(name, state)
 
     while len(state["full_backups"]) > config["keep_full_backup_count"]:
         delete_full_backup(name, config["remote"], state["full_backups"][0]["name"])
         del state["full_backups"][0]
+    save_state(name, state)
 
 
 def perform_backup(state, config):
@@ -316,6 +318,7 @@ def perform_backup(state, config):
         log_info("Resuming upload, files left are: " + str(state["upload"]["files_left"]))
 
     for f in files:
+        save_state(name, state)
         upload(tmp_dir + "/" + f, full_remote + "/" + f)
         state["upload"]["files_left"].remove(f)
         state["upload"]["files_uploaded"].append(f)
