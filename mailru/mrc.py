@@ -6,10 +6,11 @@ import sys
 import time
 import urllib
 import urllib.parse
-
 import requests
+import hashlib
+import yaml
 
-#https://github.com/SerjPopov/cloud-mail-ru-php
+# https://github.com/SerjPopov/cloud-mail-ru-php
 
 _cookies = requests.utils.cookiejar_from_dict({})
 _session = requests.Session()
@@ -130,13 +131,57 @@ def rm(file: str):
         raise Exception("Can't remove file " + file + ": " + resp.text)
 
 
+#
+#
+#
+def _load_upload_state(localFile: str, remoteFile: str):
+    fname = "/data/_upload_state/" + \
+            hashlib.md5(localFile + "*" + remoteFile + "*" + len(os.path.getsize(localFile)))
+
+    try:
+        with open(fname, mode="r") as f:
+            return yaml.load(f.read())
+    except IOError:
+        return {
+            "off": 0,
+            "suffix": 0
+        }
+
+
+def _save_upload_state(localFile: str, remoteFile: str, state):
+    if not os.path.exists(localFile):
+        return
+
+    try:
+        os.makedirs("/data/_upload_state")
+    except os.error:
+        pass
+
+    fname = "/data/_upload_state/" + \
+            hashlib.md5(localFile + "*" + remoteFile + "*" + len(os.path.getsize(localFile)))
+
+    if state is None:
+        try:
+            os.remove(fname)
+        except IOError:
+            pass
+        return
+
+    try:
+        with open(fname, mode="w") as f:
+            f.write(yaml.dump(state))
+    except IOError:
+        pass
+
+
 def upload(localFile: str, remoteFile: str):
     sz = os.path.getsize(localFile)
     if sz < split_size:  # can upload as-is
         _upload(localFile, remoteFile, 0, sz)
     else:  # split file to upload into chunks of split_size bytes
-        off = 0
-        suffix = 0
+        state = _load_upload_state(localFile, remoteFile)
+        off = state["off"]
+        suffix = state["suffix"]
         while off < sz:
             s = ''
             i = suffix
@@ -149,10 +194,15 @@ def upload(localFile: str, remoteFile: str):
             _upload(localFile, remoteFile + ".part" + s, off, len_)
             off += len_
             suffix += 1
+            state["off"] = off
+            state["suffix"] = suffix
+            _save_upload_state(localFile, remoteFile, state)
+        _save_upload_state(localFile, remoteFile, None)
 
 
 def _upload(localFile: str, remoteFile: str, off, sz):
     rm(remoteFile)
+
     def doUpload(localFile: str):
         # curl 'https://cloclo28-upload.cloud.mail.ru/upload/
         # ?cloud_domain=2&x-email=scf37%40mail.ru&fileapi148613862579710' -H 'Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryLoqLLChEO0q3Vjal' -H 'Accept: */*' -H 'Cache-Control: no-cache' -H 'X-Requested-With: XMLHttpRequest' -H 'Cookie: p=+1UAAF4+7gAA; mrcu=86C5564F0D7951BAEFCA5D01A12E; _ym_uid=1466774502371218083; act=9ee53c858cca471eb9aea1653b12bfc7; c=GnE8WAAAADkNbAAhAAQAVQIBAAQA; i=AQDqC4tYBwATAAhSG3wAAdsAARwBAR8BAZoBARkCARsCAeoCAQADAUgEAZUEAR0GAaIGAQIHATcHAjwHAdsHAU0IAXMIAXYIAXcIAYkJAZoJAf4JASgKATcKAW4KAU4CCAQBKAABkwIINxJlAAFsAAFuAAFvAAFyAAF2AAGBAAHCAAH6AAH7AAERAQEVAQEeAQEsAQEvAQFEAQFFAQFGAQHcBAgEAQEAAeEECQEB4gQKBBwMvgfWBggEAQEAAQ==; b=LkMBADAtNVcAAQAQzmPiBgAA; searchuid=527586981448012070; _gat=1; t=obLD1AAAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAACAAAEBbAcA; sdcs=0CGkdfRx62LYcoWz; _ga=GA1.2.1374535807.1448021369; s=fver=16; _ym_isad=2; VID=05X34p1bDW1Y0000060C14nY::1967099:; Mpop=1486138587:737d514261415365190502190805001b05031d02040d4b6a515f475a05010800091800000f1742535704021658505d5b174345:scf37@mail.ru:' -H 'Connection: keep-alive' -H 'Referer: https://cloud.mail.ru/home/' --data-binary $'------WebKitFormBoundaryLoqLLChEO0q3Vjal\r\nContent-Disposition: form-data; name="file"; filename="mrc-test-1486138492.9054418"\r\nContent-Type: application/octet-stream\r\n\r\n\r\n------WebKitFormBoundaryLoqLLChEO0q3Vjal\r\nContent-Disposition: form-data; name="_file"\r\n\r\nmrc-test-1486138492.9054418\r\n------WebKitFormBoundaryLoqLLChEO0q3Vjal--\r\n' --compressed

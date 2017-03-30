@@ -295,12 +295,11 @@ def perform_backup(state, config):
     #we have pending upload if:
     # - uploaded and pending files are still there
     # - index file is still there
-    # - at least one file already uploaded and at least one file is left
+    # - least one file is left
     is_upload_in_progress = "upload" in state \
         and "files_uploaded" in state["upload"] \
         and "files_left" in state["upload"] \
         and len(state["upload"]["files_left"]) > 0 \
-        and len(state["upload"]["files_uploaded"]) > 0 \
         and os.path.isdir(tmp_dir) \
         and len(state["upload"]["files_left"]) \
         and os.path.isfile(tmp_dir + "/" + index_file) \
@@ -329,6 +328,7 @@ def perform_backup(state, config):
     save_state(name, state)
 
     clean_tmp_dir()
+    log_info("Backup " + name + " complete")
 
 
 #
