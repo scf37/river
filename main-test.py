@@ -5,7 +5,7 @@ import os
 import time
 import yaml
 
-
+# To work, this tests except zpaq binary in current directory
 class MyTest(unittest.TestCase):
     base = ""
 

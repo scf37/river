@@ -178,11 +178,6 @@ def compress(name, tmp_dir, options):
         log_info(out)
 
 
-def backup_upload(files, local_dir, full_remote):
-    for f in files:
-        upload(local_dir + "/" + f, full_remote + "/" + f)
-
-
 def drop_incremental_backup_index(name):
     try:
         os.remove(full_local_dir(name) + "/" + name + "00000.zpaq")
@@ -194,7 +189,9 @@ def drop_incremental_backup_index(name):
 #  full_backups[].name
 #  full_backups[].path
 #  full_backups[].incremental_backups[]
-#  upload
+#  upload.files_uploaded[]
+#  upload.files_left[]
+
 def load_state(name):
     ymlpath = full_local_dir(name) + "/" + name + ".yml"
     try:
@@ -289,23 +286,49 @@ def perform_backup(state, config):
         shutil.rmtree(tmp_dir, True)
         os.makedirs(tmp_dir)
 
-    try:
+    def forall(l, iterable):
+        for e in iterable:
+            if not l(e):
+                return False
+        return True
+
+    #we have pending upload if:
+    # - uploaded and pending files are still there
+    # - index file is still there
+    # - at least one file already uploaded and at least one file is left
+    is_upload_in_progress = "upload" in state \
+        and "files_uploaded" in state["upload"] \
+        and "files_left" in state["upload"] \
+        and len(state["upload"]["files_left"]) > 0 \
+        and len(state["upload"]["files_uploaded"]) > 0 \
+        and os.path.isdir(tmp_dir) \
+        and len(state["upload"]["files_left"]) \
+        and os.path.isfile(tmp_dir + "/" + index_file) \
+        and forall(lambda ff: os.path.isfile(tmp_dir + "/" + ff), state["upload"]["files_left"]) \
+        and forall(lambda ff: os.path.isfile(tmp_dir + "/" + ff), state["upload"]["files_uploaded"])
+
+    if not is_upload_in_progress:
         clean_tmp_dir()
         compress(name, tmp_dir, collect_options(config["local"]))
-
         files = filter(lambda f: os.path.isfile(tmp_dir + "/" + f) and f != index_file, os.listdir(tmp_dir))
+        state["upload"] = {"files_uploaded": [], "files_left": files}
+    else:
+        files = state["upload"]["files_left"]
+        log_info("Resuming upload, files left are: " + str(state["upload"]["files_left"]))
 
-        backup_upload(files, tmp_dir, full_remote)
-
-        # totally commit
-        shutil.move(tmp_dir + "/" + index_file, full_local + "/" + index_file)
-        state["last_backup_timestamp"] = int(time.time())
-        current_full_backup["incremental_backups"].append(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-
+    for f in files:
+        upload(tmp_dir + "/" + f, full_remote + "/" + f)
+        state["upload"]["files_left"].remove(f)
+        state["upload"]["files_uploaded"].append(f)
         save_state(name, state)
 
-    finally:
-        clean_tmp_dir()
+    # totally commit
+    shutil.move(tmp_dir + "/" + index_file, full_local + "/" + index_file)
+    state["last_backup_timestamp"] = int(time.time())
+    current_full_backup["incremental_backups"].append(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    save_state(name, state)
+
+    clean_tmp_dir()
 
 
 #
