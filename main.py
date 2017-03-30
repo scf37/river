@@ -95,6 +95,7 @@ def get_ip_address():
     return s.getsockname()[0]
 
 
+# upload single file
 def upload(src, dst):
     pr = subprocess.Popen([get_script_dir() + "/" + remote_protocol + "/upload", src, dst],
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -107,6 +108,7 @@ def upload(src, dst):
         raise IOError("Upload " + src + " to " + dst + " failed")
 
 
+# download single file
 def download(src, dst, protocol=remote_protocol):
     pr = subprocess.Popen([get_script_dir() + "/" + protocol + "/download", src, dst],
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -151,52 +153,34 @@ def almost_full_remote_dir(name, remote):
     return d
 
 
-def run_backup(name, remote, full_backup_name, options):
-    full_remote = full_remote_dir(name, remote, full_backup_name)
-    full_local = full_local_dir(name)
+def compress(name, tmp_dir, options):
     index_file = name + "00000.zpaq"
-    tmp_dir = full_local + "/tmp"
+    full_local = full_local_dir(name)
 
-    def clean_tmp_dir():
-        shutil.rmtree(tmp_dir, True)
-        os.makedirs(tmp_dir)
+    if os.path.isfile(full_local + "/" + index_file):
+        log_info("Starting INCREMENTAL backup of " + name)
+        shutil.copyfile(full_local + "/" + index_file, tmp_dir + "/" + index_file)
+    else:
+        log_info("Starting FULL backup of " + name)
 
-    clean_tmp_dir()
+    zpaq_command = [get_script_dir() + "/zpaq",
+                    "add",
+                    tmp_dir + '/' + name + "?????"] + options + ["-index", tmp_dir + "/" + index_file]
+    p = subprocess.Popen(zpaq_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    out, _ = p.communicate()
+    p.poll()
 
-    try:
-        if os.path.isfile(full_local + "/" + index_file):
-            log_info("Starting INCREMENTAL backup of " + name)
-        else:
-            log_info("Starting FULL backup of " + name)
+    if p.returncode != 0:
+        log_error(out)
+        log_error("zpaq invocation failed")
+        raise IOError("zpaq invocation failed")
+    else:
+        log_info(out)
 
-        try:
-            shutil.copyfile(full_local + "/" + index_file, tmp_dir + "/" + index_file)
-        except IOError:
-            pass
 
-        zpaq_command = [get_script_dir() + "/zpaq",
-                        "add",
-                        tmp_dir + '/' + name + "?????"] + options + ["-index", tmp_dir + "/" + index_file]
-        p = subprocess.Popen(zpaq_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        out, _ = p.communicate()
-        p.poll()
-
-        if p.returncode != 0:
-            log_error(out)
-            log_error("zpaq invocation failed")
-            return
-        else:
-            log_info(out)
-
-        for f in os.listdir(tmp_dir):
-            if not os.path.isfile(tmp_dir + "/" + f) or f == index_file:
-                continue
-            upload(tmp_dir + "/" + f, full_remote + "/" + f)
-
-        shutil.move(tmp_dir + "/" + index_file, full_local + "/" + index_file)
-
-    finally:
-        clean_tmp_dir()
+def backup_upload(files, local_dir, full_remote):
+    for f in files:
+        upload(local_dir + "/" + f, full_remote + "/" + f)
 
 
 def drop_incremental_backup_index(name):
@@ -210,6 +194,7 @@ def drop_incremental_backup_index(name):
 #  full_backups[].name
 #  full_backups[].path
 #  full_backups[].incremental_backups[]
+#  upload
 def load_state(name):
     ymlpath = full_local_dir(name) + "/" + name + ".yml"
     try:
@@ -262,7 +247,7 @@ def new_full_backup_name():
     return n
 
 
-def perform_backup(state, config):
+def roll_full_backup(state, config):
     name = config["name"]
 
     def start_new_full_backup():
@@ -282,17 +267,45 @@ def perform_backup(state, config):
         # need to do full backup
         drop_incremental_backup_index(name)
         start_new_full_backup()
-        current_full_backup = state["full_backups"][-1]
-
-    run_backup(name, config["remote"], current_full_backup["name"], collect_options(config["local"]))
 
     while len(state["full_backups"]) > config["keep_full_backup_count"]:
         delete_full_backup(name, config["remote"], state["full_backups"][0]["name"])
         del state["full_backups"][0]
 
-    state["last_backup_timestamp"] = int(time.time())
-    current_full_backup["incremental_backups"].append(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-    save_state(name, state)
+
+def perform_backup(state, config):
+    name = config["name"]
+
+    roll_full_backup(state, config)
+
+    current_full_backup = state["full_backups"][-1]
+
+    full_remote = full_remote_dir(name, config["remote"], current_full_backup["name"])
+    full_local = full_local_dir(name)
+    index_file = name + "00000.zpaq"
+    tmp_dir = full_local + "/tmp"
+
+    def clean_tmp_dir():
+        shutil.rmtree(tmp_dir, True)
+        os.makedirs(tmp_dir)
+
+    try:
+        clean_tmp_dir()
+        compress(name, tmp_dir, collect_options(config["local"]))
+
+        files = filter(lambda f: os.path.isfile(tmp_dir + "/" + f) and f != index_file, os.listdir(tmp_dir))
+
+        backup_upload(files, tmp_dir, full_remote)
+
+        # totally commit
+        shutil.move(tmp_dir + "/" + index_file, full_local + "/" + index_file)
+        state["last_backup_timestamp"] = int(time.time())
+        current_full_backup["incremental_backups"].append(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+
+        save_state(name, state)
+
+    finally:
+        clean_tmp_dir()
 
 
 #
