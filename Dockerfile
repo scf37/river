@@ -5,6 +5,7 @@ RUN apt-get update && \
     cd /tmp && \
     wget http://mattmahoney.net/dc/zpaq715.zip && \
     unzip zpaq715.zip && \
+    sed -i -- 's/-march=native//g' Makefile && \
     make && \
     mkdir -p /opt/backuper && \
     cp zpaq /opt/backuper/zpaq && \
@@ -12,7 +13,7 @@ RUN apt-get update && \
     apt-get remove -y cpp-4.8 gcc-4.8 manpages manpages-dev && \ 
     apt-get autoremove -y && \
 #    curl https://bootstrap.pypa.io/get-pip.py | python && \
-    pip install awscli && pip3 install requests && \
+    pip install awscli && pip3 install requests pyyaml && \
     rm -rf /usr/share/doc && \ 
     rm -rf /usr/share/man && \ 
     rm -rf /var/lib/apt/lists/* && \ 
