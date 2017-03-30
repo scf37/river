@@ -1,0 +1,10 @@
+#!/bin/bash
+
+if [ "$#" != "2" ]; then
+    echo "Usage: upload <from-file> <to-file>"
+    exit 1
+fi
+
+echo "Uploading $1 -> $2"
+
+aws s3 cp $1 $2

@@ -1,0 +1,12 @@
+#!/bin/bash
+
+if [ "$#" != "2" ]; then
+    echo "Usage: upload <from-file> <to-file>"
+    exit 1
+fi
+
+mkdir -p $(dirname $2)
+
+echo "Uploading $1 -> $2"
+
+cp -f $1 $2

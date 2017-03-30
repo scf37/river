@@ -1,0 +1,12 @@
+#!/bin/bash
+
+if [ "$#" != "2" ]; then
+    echo "Usage: download <from-file> <to-file>"
+    exit 1
+fi
+
+echo "Downloading $1 -> $2"
+
+mkdir -p $(dirname $2)
+
+cp -f $1 $2
