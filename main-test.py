@@ -44,7 +44,7 @@ class MyTest(unittest.TestCase):
             "exclude": ["*.tmp", "*.jar"],
             "include_only": ["a*", "b?"]
         })
-        self.assertEqual(args, "dir1 dir2 -only *.tmp -only *.jar -not a* -not b?".split(" "))
+        self.assertEqual(args, "dir1 dir2 -not *.tmp -not *.jar -only a* -only b?".split(" "))
 
     def test_perform_backup(self):
 

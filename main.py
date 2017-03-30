@@ -420,6 +420,7 @@ def backup_tasks():
                 log_warn("Unable to open backup task " + f + ": " + str(e))
                 pass
 
+    result.sort(key=lambda a: a['file'])
     return result
 
 
