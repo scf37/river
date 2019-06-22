@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Confyrm application startup script
+# application startup script
 # It always starts first in docker image, loads and validates configuration and executes/replaces with next script
 # Configuration is provided in service.yml and can be collected from:
 # - env variables

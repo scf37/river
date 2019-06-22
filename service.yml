@@ -13,11 +13,11 @@ help: |
     keep_full_backup_count - integer, maximum number of full backups to keep
     backup_rate - "<n>d", "<n>h", "<n>m" - days, hours or minutes between backups
 
-  Backuper automatically catches up on config changes and resillent to failures.
+  Backuper automatically catches up on config changes and is resillent to failures.
 
   Restoration:
   call restore.py INSIDE configured container. There is own help but to summarize:
-   - backup archives contain ABSOLUTE file paths so restoration by default places filies with the same pathnames
+   - backup archives contain ABSOLUTE file paths so restoration by default places files with the same pathnames
    - typical invocation: restore.py --url <url>
 
   Initiating backups from outside:

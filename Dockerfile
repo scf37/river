@@ -31,8 +31,8 @@ ENV LC_ALL=C.UTF-8
 # Create log and conf dirs
 RUN mkdir -p /data/logs && mkdir -p /data/conf
 
-ADD ./start-app.py /opt/confyrm-app2/start-app
-ENV PATH /opt/confyrm-app2:$PATH
+ADD ./start-app.py /opt/app2/start-app
+ENV PATH /opt/app2:$PATH
 
 ENV PATH /opt/backuper:$PATH
 ENTRYPOINT ["start-app", "--script", "/opt/backuper/main.py"]

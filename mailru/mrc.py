@@ -206,8 +206,6 @@ def _upload(localFile: str, remoteFile: str, off, sz):
     rm(remoteFile)
 
     def doUpload(localFile: str):
-        # curl 'https://cloclo28-upload.cloud.mail.ru/upload/
-        # ?cloud_domain=2&x-email=scf37%40mail.ru&fileapi148613862579710' -H 'Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryLoqLLChEO0q3Vjal' -H 'Accept: */*' -H 'Cache-Control: no-cache' -H 'X-Requested-With: XMLHttpRequest' -H 'Cookie: p=+1UAAF4+7gAA; mrcu=86C5564F0D7951BAEFCA5D01A12E; _ym_uid=1466774502371218083; act=9ee53c858cca471eb9aea1653b12bfc7; c=GnE8WAAAADkNbAAhAAQAVQIBAAQA; i=AQDqC4tYBwATAAhSG3wAAdsAARwBAR8BAZoBARkCARsCAeoCAQADAUgEAZUEAR0GAaIGAQIHATcHAjwHAdsHAU0IAXMIAXYIAXcIAYkJAZoJAf4JASgKATcKAW4KAU4CCAQBKAABkwIINxJlAAFsAAFuAAFvAAFyAAF2AAGBAAHCAAH6AAH7AAERAQEVAQEeAQEsAQEvAQFEAQFFAQFGAQHcBAgEAQEAAeEECQEB4gQKBBwMvgfWBggEAQEAAQ==; b=LkMBADAtNVcAAQAQzmPiBgAA; searchuid=527586981448012070; _gat=1; t=obLD1AAAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAACAAAEBbAcA; sdcs=0CGkdfRx62LYcoWz; _ga=GA1.2.1374535807.1448021369; s=fver=16; _ym_isad=2; VID=05X34p1bDW1Y0000060C14nY::1967099:; Mpop=1486138587:737d514261415365190502190805001b05031d02040d4b6a515f475a05010800091800000f1742535704021658505d5b174345:scf37@mail.ru:' -H 'Connection: keep-alive' -H 'Referer: https://cloud.mail.ru/home/' --data-binary $'------WebKitFormBoundaryLoqLLChEO0q3Vjal\r\nContent-Disposition: form-data; name="file"; filename="mrc-test-1486138492.9054418"\r\nContent-Type: application/octet-stream\r\n\r\n\r\n------WebKitFormBoundaryLoqLLChEO0q3Vjal\r\nContent-Disposition: form-data; name="_file"\r\n\r\nmrc-test-1486138492.9054418\r\n------WebKitFormBoundaryLoqLLChEO0q3Vjal--\r\n' --compressed
         url = _upload_url + '?cloud_domain=2&x-email=' + _user + '%40' + _domain + '&fileapi' + str(int(time.time())) + '0376'
 
         with open(localFile, "rb") as f:
@@ -267,7 +265,6 @@ def download(remoteFile: str, localFile: str):
 
 
 def _download(remoteFile: str, localFile: str, append=False):
-    # https://cloclo18.datacloudmail.ru/get/tmp/mrc-test-1486141096.1744552.txt?x-email=scf37%40mail.ru
     url = _download_url + remoteFile + "?x-email=" + _user + '%40' + _domain
     r = _req("get", url, stream=True)
 

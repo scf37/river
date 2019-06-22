@@ -294,7 +294,7 @@ def perform_backup(state, config):
                 return False
         return True
 
-    #we have pending upload if:
+    # we have pending upload if:
     # - uploaded and pending files are still there
     # - index file is still there
     # - least one file is left
