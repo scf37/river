@@ -2,3 +2,5 @@
 .idea
 zpaq
 backuper.log
+*.o
+venv

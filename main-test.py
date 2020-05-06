@@ -11,20 +11,36 @@ class MyTest(unittest.TestCase):
 
     def remote_dir(self):
         return "/tmp/backuper-test-" + self.base + "/remote"
+
+    def base_dir(self):
+        return "/tmp/backuper-test-" + self.base
+
+    def remote_url(self):
+        return "local:" + self.remote_dir()
     remote_protocol = "local"
+    password = "hello"
 
     def setUp(self):
         self.base = str(time.time())
         main.work_dir = "/tmp/backuper-test-" + self.base + "/work"
-        main.remote_dir = self.remote_dir()
-        main.remote_protocol = self.remote_protocol
         main.log_file_name = "./backuper.log"
 
     def test_get_ip_address(self):
         self.assertNotEqual(main.get_ip_address(), "")
 
     def test_state_save_load(self):
-        state = main.load_state("name1")
+        state0 = {
+            "local": {
+                "exclude": ["*.tmp"],
+                "include_only": [],
+            },
+            "keep_incremental_backup_count": 10,
+            "keep_full_backup_count": 3,
+            "last_backup_timestamp": 0,
+            "full_backups": []
+        }
+        main.save_state(self.remote_url(), state0, self.password)
+        state = main.load_state(self.remote_url(), self.password)
         self.assertIsNotNone(state)
         self.assertIn("last_backup_timestamp", state)
         self.assertIn("full_backups", state)
@@ -32,68 +48,66 @@ class MyTest(unittest.TestCase):
 
         state["last_backup_timestamp"] = 123
 
-        main.save_state("name1", state)
-        state = main.load_state("name1")
+        main.save_state(self.remote_url(), state, self.password)
+        state = main.load_state(self.remote_url(), self.password)
         self.assertEqual(state["last_backup_timestamp"], 123)
 
-        self.assertNotEqual(main.load_state("name2")["last_backup_timestamp"], 123)
+        main.save_state(self.remote_url() + "2", state0, self.password)
+
+        self.assertNotEqual(main.load_state(self.remote_url() + "2", self.password)["last_backup_timestamp"], 123)
 
     def test_collect_options(self):
         args = main.collect_options({
-            "dirs": ["dir1", "dir2"],
             "exclude": ["*.tmp", "*.jar"],
             "include_only": ["a*", "b?"]
-        })
-        self.assertEqual(args, "dir1 dir2 -not *.tmp -not *.jar -only a* -only b?".split(" "))
+        }, "")
+        self.assertEqual(args, "-not *.tmp -not *.jar -only a* -only b?".split(" "))
 
     def test_perform_backup(self):
 
         def assert_exists(fname):
-            p = "/tmp/backuper-test-" + self.base + fname
+            p = self.remote_dir() + fname
             self.assertTrue(os.path.isfile(p), "File is missing: " + fname + " (" + p + ")")
 
         def assert_missing(fname):
             p = "/tmp/backuper-test-" + self.base + fname
             self.assertFalse(os.path.isfile(p), "File exists: " + fname + " (" + p + ")")
 
-        config = {
-            "name": "backup-name",
+        dirs = [self.base_dir() + "/source"]
+        state = {
             "local": {
-                "dirs": ["/tmp/backuper-test-" + self.base + "/source"],
                 "exclude": [],
                 "include_only": []
             },
-
-            "remote": "remote-bucket",
             "keep_incremental_backup_count": 10,
             "keep_full_backup_count": 3,
-            "backup_rate": "24h"
+
+            "last_backup_timestamp": 0,
+            "full_backups": []
         }
 
         def assert_full_backup_is_sane(full_backup_name):
-            base = "/remote/" + "/" + config["remote"] + "/" + config["name"] + "/" \
+            base = "1/" \
                    + main.get_ip_address() + "/" + full_backup_name
-            assert_exists(base + "/" + config["name"] + "00001.zpaq")
+            assert_exists(base + "/" + "a00001.zpaq")
 
-        os.makedirs(config["local"]["dirs"][0])
+        os.makedirs(dirs[0])
+        url = self.remote_url() + "1"
 
-        state = main.load_state("backup-name")
+        main.save_state(url, state, self.password)
 
         def perform_backup():
-            with open(config["local"]["dirs"][0] + "/some.file", "w") as f:
+            with open(dirs[0] + "/some.file", "w") as f:
                 f.write("some content" + str(time.time()))
-            main.perform_backup(state, config)
+            print("url=" + url + ", dirs=" + str(dirs))
+            main.perform_backup(url, dirs, self.password)
 
         perform_backup()
 
-        # state is saved
-        assert_exists("/work/backup-name/backup-name.yml")
-
-        # archive header is kept locally
-        assert_exists("/work/backup-name/backup-name00000.zpaq")
+        state = main.load_state(url, self.password)
 
         # archive header and data is uploaded
-        remote_first_backup_base = "/remote/remote-bucket/backup-name/" + main.get_ip_address() + "/" + state["full_backups"][0]["name"]
+        remote_first_backup_base = "1/" + main.get_ip_address() + "/" + state["full_backups"][0]["name"]
         assert_full_backup_is_sane(state["full_backups"][0]["name"])
 
         # backup timestamp changed
@@ -102,11 +116,13 @@ class MyTest(unittest.TestCase):
         perform_backup()
 
         # second tome is added
-        assert_exists(remote_first_backup_base + "/backup-name00002.zpaq")
+        assert_exists(remote_first_backup_base + "/a00002.zpaq")
 
         # run another 9 incremental backups
         for _ in range(9):
             perform_backup()
+
+        state = main.load_state(url, self.password)
 
         # state contains one full backup and 10 incremental ones
         self.assertEqual(len(state["full_backups"]), 1)
@@ -114,10 +130,12 @@ class MyTest(unittest.TestCase):
 
         # full backup is present on disk
         assert_full_backup_is_sane(state["full_backups"][0]["name"])
-        assert_exists(remote_first_backup_base + "/backup-name00011.zpaq")
+        assert_exists(remote_first_backup_base + "/a00011.zpaq")
 
         # rolling out another full backup
         perform_backup()
+
+        state = main.load_state(url, self.password)
 
         # it is on disk
         assert_full_backup_is_sane(state["full_backups"][1]["name"])
@@ -138,6 +156,8 @@ class MyTest(unittest.TestCase):
         # start FOURTH full backup
         perform_backup()
 
+        state = main.load_state(url, self.password)
+
         # first full backup should be deleted by now
         self.assertEqual(len(state["full_backups"]), 3)
 
@@ -146,118 +166,54 @@ class MyTest(unittest.TestCase):
         assert_full_backup_is_sane(state["full_backups"][1]["name"])
         assert_full_backup_is_sane(state["full_backups"][2]["name"])
 
-    def test_load_backup_configs(self):
-        main.backup_config_dir = "/tmp/backuper-test-" + self.base + "/conf"
-        os.makedirs(main.backup_config_dir)
-        with open(main.backup_config_dir + "/a.yml", "w") as f:
-            f.write("name: a\nremote: \"\"")
-        with open(main.backup_config_dir + "/b.yml", "w") as f:
-            f.write("name: b\nremote: \"\"")
-        with open(main.backup_config_dir + "/c.yml", "w") as f:
-            f.write("")
-
-        configs = main.load_backup_configs()
-
-        self.assertEqual(len(configs), 2)
-        for c in configs:
-            self.assertIn("config", c)
-            self.assertIn("name", c["config"])
-            self.assertIn("state", c)
-            self.assertIn("last_backup_timestamp", c["state"])
-
     def test_restore(self):
-        main.backup_config_dir = "/tmp/backuper-test-" + self.base + "/conf"
-        os.makedirs(main.backup_config_dir)
-
-        config = {
-            "name": "backup-restore",
+        state = {
             "local": {
-                "dirs": ["/tmp/backuper-test-" + self.base + "/source"],
                 "exclude": [],
                 "include_only": []
             },
-
-            "remote": "remote-bucket",
-            "keep_incremental_backup_count": 3,
+            "keep_incremental_backup_count": 10,
             "keep_full_backup_count": 3,
-            "backup_rate": "24h"
+
+            "last_backup_timestamp": 0,
+            "full_backups": []
         }
 
-        with open(main.backup_config_dir + "/conf.yml", "w") as f:
-            f.write(yaml.dump(config))
+        main.save_state(self.remote_url(), state, self.password)
 
-        os.makedirs(config["local"]["dirs"][0])
-
-        state = main.load_state("backup-name")
+        state = main.load_state(self.remote_url(), self.password)
+        files_dir = self.base_dir() + "/source"
+        os.makedirs(files_dir)
 
         def perform_backup(n):
-            with open(config["local"]["dirs"][0] + "/" + str(n) + ".file", "w") as f:
+            with open(files_dir + "/" + str(n) + ".file", "w") as f:
                 f.write(str(n))
-            main.perform_backup(state, config)
+            main.perform_backup(self.remote_url(), [files_dir], self.password)
 
         for n in range(1, 11):
             perform_backup(n)
-        self.assertEqual(main.restore_names(), ["backup-restore"])
 
-        self.assertEqual(main.restore_urls("backup-restor"), [])
-        urls = main.restore_urls("backup-restore")
+        state = main.load_state(self.remote_url(), self.password)
+
+        urls = main.restore_urls(state)
         self.assertEqual(len(urls), 10)
 
-        base = "/tmp/backuper-test-" + self.base + "/source"
-
         def assert_content(n):
-            self.assertEqual(sorted(os.listdir(base)), sorted(map(lambda a: str(a) + ".file", range(1, n + 1))))
+            self.assertEqual(sorted(os.listdir(files_dir)), sorted(map(lambda a: str(a) + ".file", range(1, n + 1))))
 
         import subprocess
-        subprocess.call(["bash", "-c", "rm " + base + "/*"])
+        subprocess.call(["bash", "-c", "rm " + files_dir + "/*"])
         assert_content(0)
 
         for n in range(1, 11):
-            subprocess.call(["bash", "-c", "rm " + base + "/*"])
-            main.restore(urls[n - 1]["url"])
+            subprocess.call(["bash", "-c", "rm " + files_dir + "/*"])
+            main.restore(self.remote_url(), urls[n - 1]["version"], self.password)
             assert_content(n)
 
         for n in range(10, 0, -1):
-            subprocess.call(["bash", "-c", "rm " + base + "/*"])
-            main.restore(urls[n - 1]["url"])
+            subprocess.call(["bash", "-c", "rm " + files_dir + "/*"])
+            main.restore(self.remote_url(), urls[n - 1]["version"], self.password)
             assert_content(n)
-
-    def test_backup_tasks(self):
-        main.backup_tasks_dir = "/tmp/backuper-test-" + self.base + "/tasks"
-        os.makedirs(main.backup_tasks_dir)
-
-        def add(f, name):
-            with open(main.backup_tasks_dir + "/" + f, "w") as ff:
-                ff.write(name)
-
-        def assert_file(f, content):
-            p = main.backup_tasks_dir + "/" + f
-            self.assertTrue(os.path.isfile(p), "File " + p + " does not exist")
-            with open(p, "r") as ff:
-                self.assertEqual(content, ff.read())
-
-        add("task-file1", "task1")
-        add("task-file2", "task2")
-        add("task-file3", "task3")
-
-        self.assertEqual(main.backup_tasks(), [
-            {"file": "task-file1", "name": "task1"},
-            {"file": "task-file2", "name": "task2"},
-            {"file": "task-file3", "name": "task3"}
-        ])
-
-        main.commit_backup_task("task-file1", "backup-url", "")
-        self.assertEqual(main.backup_tasks(), [
-            {"file": "task-file2", "name": "task2"},
-            {"file": "task-file3", "name": "task3"}
-        ])
-        assert_file("task-file1-ok", "backup-url")
-
-        main.commit_backup_task("task-file2", "", "my-error")
-        self.assertEqual(main.backup_tasks(), [
-            {"file": "task-file3", "name": "task3"}
-        ])
-        assert_file("task-file2-error", "my-error")
 
 
 if __name__ == '__main__':

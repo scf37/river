@@ -1,6 +1,6 @@
 // zpaq.cpp - Journaling incremental deduplicating archiver
 
-#define ZPAQ_VERSION "7.15"
+#define ZPAQ_VERSION "7.15b"
 /*
   This software is provided as-is, with no warranty.
   I, Matt Mahoney, release this software into
@@ -299,6 +299,12 @@ int64_t mtime() {
   if (t<global_start) t+=0x100000000LL;
   return t;
 #endif
+}
+
+bool isfifo(const char * fname) {
+      struct stat st;
+      stat(fname, &st);
+      return st.st_mode & S_IFIFO;
 }
 
 // Convert 64 bit decimal YYYYMMDDHHMMSS to "YYYY-MM-DD HH:MM:SS"
@@ -618,11 +624,13 @@ class ArchiveBase {
 protected:
   libzpaq::AES_CTR* aes;  // NULL if not encrypted
   FP fp;          // currently open file or FPNULL
+  FP fph;          // archive header file (if exists) or FPNULL
 public:
-  ArchiveBase(): aes(0), fp(FPNULL) {}
+  ArchiveBase(): aes(0), fp(FPNULL), fph(FPNULL) {}
   ~ArchiveBase() {
     if (aes) delete aes;
     if (fp!=FPNULL) fclose(fp);
+    if (fph!=FPNULL) fclose(fph);
   }  
   bool isopen() {return fp!=FPNULL;}
 };
@@ -631,6 +639,8 @@ public:
 class InputArchive: public ArchiveBase, public libzpaq::Reader {
   vector<int64_t> sz;  // part sizes
   int64_t off;  // current offset
+  int64_t loff;  // current offset since beginning of current file
+  size_t hsize;  //header file size, if any
   string fn;  // filename, possibly multi-part with wildcards
 public:
 
@@ -646,7 +656,14 @@ public:
   // Read up to len bytes into obuf at current offset. Return 0..len bytes
   // actually read. 0 indicates EOF.
   int read(char* obuf, int len) {
-    int nr=fread(obuf, 1, len, fp);
+    int nr;
+    if (loff < hsize) {
+        nr=fread(obuf, 1, len, fph);
+        fseek(fp, nr, SEEK_CUR) && 1;
+    } else {
+        nr = fread(obuf, 1, len, fp);
+    }
+
     if (nr==0) {
       seek(0, SEEK_CUR);
       nr=fread(obuf, 1, len, fp);
@@ -654,6 +671,7 @@ public:
     if (nr==0) return 0;
     if (aes) aes->encrypt(obuf, nr, off);
     off+=nr;
+    loff += nr;
     return nr;
   }
 
@@ -681,6 +699,9 @@ void InputArchive::seek(int64_t p, int whence) {
   // Optimization for single file to avoid close and reopen
   if (sz.size()==1) {
     fseeko(fp, off, SEEK_SET);
+    loff = ftello(fp);
+    if (fph != FPNULL)
+        fseek(fph, loff, SEEK_SET);
     return;
   }
 
@@ -696,7 +717,17 @@ void InputArchive::seek(int64_t p, int whence) {
   fclose(fp);
   fp=fopen(next.c_str(), RB);
   if (fp==FPNULL) ioerr(next.c_str());
+
   fseeko(fp, off-sum, SEEK_END);
+
+  std::string nexth = next + ".hdr";
+  fph = fopen(nexth.c_str(), RB);
+  if (fph != FPNULL) {
+    fseek(fph, 0L, SEEK_END);
+    hsize = ftell(fph);
+    loff = ftello(fp);
+    fseek(fph, loff, SEEK_SET);
+  }
 }
 
 // Open for input. Decrypt with password and using the salt in the
@@ -725,19 +756,38 @@ InputArchive::InputArchive(const char* filename, const char* password):
   if (!isopen()) ioerr(part1.c_str());
   assert(fp!=FPNULL);
 
+  std::string part1h = part1 + ".hdr";
+  fph = fopen(part1h.c_str(), RB);
+
+  if (fph != FPNULL) {
+      fseek(fph, 0L, SEEK_END);
+      hsize = ftell(fph);
+      fseek(fph, 0L, SEEK_SET);
+  }
+  loff=0;
+
   // Get encryption salt
   if (password) {
     char salt[32], key[32];
-    if (fread(salt, 1, 32, fp)!=32) error("cannot read salt");
+    if (fph != FPNULL) {
+        if (fread(salt, 1, 32, fph)!=32) error("cannot read salt");
+        fseek(fp, 32, SEEK_CUR);
+    } else {
+        if (fread(salt, 1, 32, fp)!=32) error("cannot read salt");
+    }
+
+
     libzpaq::stretchKey(key, password, salt);
     aes=new libzpaq::AES_CTR(key, 32, salt);
     off=32;
+    loff=32;
   }
 }
 
 // An Archive is a file supporting encryption
 class OutputArchive: public ArchiveBase, public libzpaq::Writer {
   int64_t off;    // preceding multi-part bytes
+  int64_t foff;   // off in current file
   unsigned ptr;   // write pointer in buf: 0 <= ptr <= BUFSIZE
   enum {BUFSIZE=1<<16};
   char buf[BUFSIZE];  // I/O buffer
@@ -750,8 +800,11 @@ public:
   // Write pending output
   void flush() {
     assert(fp!=FPNULL);
-    if (aes) aes->encrypt(buf, ptr, ftello(fp)+off);
+    printf("%zu %zu\n", foff, ftell(fp));
+    if (aes) aes->encrypt(buf, ptr, foff+off);
+
     fwrite(buf, 1, ptr, fp);
+    foff += ptr;
     ptr=0;
   }
 
@@ -760,6 +813,12 @@ public:
     if (fp!=FPNULL) {
       flush();
       fseeko(fp, p, whence);
+      if (whence == SEEK_SET)
+        foff = p;
+      else if (whence == SEEK_CUR)
+        foff += p;
+      else if (whence == SEEK_END)
+        foff = ftell(fp);
     }
     else if (whence==SEEK_SET) off=p;
     else off+=p;  // assume at end
@@ -767,7 +826,7 @@ public:
 
   // Return current file offset.
   int64_t tell() const {
-    if (fp!=FPNULL) return ftello(fp)+ptr;
+    if (fp!=FPNULL) return foff+ptr;
     else return off;
   }
 
@@ -807,17 +866,19 @@ OutputArchive::OutputArchive(const char* filename, const char* password,
     const char* salt_, int64_t off_): off(off_), ptr(0) {
   assert(filename);
   if (!*filename) return;
+  foff = 0;
 
   // Open existing file
   char salt[32]={0};
   fp=fopen(filename, RBPLUS);
-  if (isopen()) {
+  if (isopen() && !isfifo(filename)) {
     if (off!=0) error("file exists and off > 0");
     if (password) {
       if (fread(salt, 1, 32, fp)!=32) error("cannot read salt");
       if (salt_ && memcmp(salt, salt_, 32)) error("salt mismatch");
     }
     seek(0, SEEK_END);
+    foff = ftell(fp);
   }
 
   // Create new file
@@ -828,6 +889,7 @@ OutputArchive::OutputArchive(const char* filename, const char* password,
       if (!salt_) error("salt not specified");
       memcpy(salt, salt_, 32);
       if (off==0 && fwrite(salt, 1, 32, fp)!=32) ioerr(filename);
+      foff = 32;
     }
   }
 
@@ -2126,7 +2188,7 @@ int Jidac::add() {
     offset=header_pos+dhsize;
     header_pos=32*(password && offset==0);
     arcname=subpart(archive, ver.size());
-    if (exists(arcname.c_str())) {
+    if (exists(arcname.c_str()) && !isfifo(arcname.c_str())) {
       printUTF8(arcname.c_str(), stderr);
       fprintf(stderr, ": archive exists\n");
       error("archive exists");
@@ -2174,7 +2236,7 @@ int Jidac::add() {
       }
     }
   }
-  if (exists(arcname.c_str())) printf("Updating ");
+  if (exists(arcname.c_str()) && !isfifo(arcname.c_str())) printf("Updating ");
   else printf("Creating ");
   printUTF8(arcname.c_str());
   printf(" at offset %1.0f + %1.0f\n", double(header_pos), double(offset));
@@ -2578,6 +2640,8 @@ int Jidac::add() {
   // Open index
   salt[0]^='7'^'z';
   OutputArchive outi(index ? index : "", password, salt, 0);
+  // and fix salt back
+  salt[0]^='7'^'z';
   WriterPair wp;
   wp.a=&out;
   if (index) wp.b=&outi;
@@ -2677,9 +2741,18 @@ int Jidac::add() {
   // Back up and write the header
   outi.close();
   int64_t archive_end=out.tell();
-  out.seek(header_pos, SEEK_SET);
-  writeJidacHeader(&out, date, cdatasize, htsize);
-  out.seek(0, SEEK_END);
+  if (isfifo(arcname.c_str())) {
+    // wrting remote archive to pipe - can't seek so use separate hdr file
+    std::string hfile = arcname + ".hdr";
+    OutputArchive outh(hfile.c_str(), password, salt, offset);
+    outh.seek(header_pos, SEEK_SET);
+    writeJidacHeader(&outh, date, cdatasize, htsize);
+    outh.close();
+  } else {
+    out.seek(header_pos, SEEK_SET);
+    writeJidacHeader(&out, date, cdatasize, htsize);
+    out.seek(0, SEEK_END);
+  }
   int64_t archive_size=out.tell();
   out.close();
 

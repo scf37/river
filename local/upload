@@ -1,12 +1,12 @@
 #!/bin/bash
 
 if [ "$#" != "2" ]; then
-    echo "Usage: upload <from-file> <to-file>"
+    echo "Usage: upload <from-file> <to-file>" > /dev/stderr
     exit 1
 fi
 
 mkdir -p $(dirname $2)
 
-echo "Uploading $1 -> $2"
+echo "Uploading $1 -> $2" > /dev/stderr
 
 cp -f $1 $2

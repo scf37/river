@@ -8,10 +8,13 @@ import time
 import logging
 import sys
 import shutil
+import tempfile
+import time
+import fcntl
+import hashlib
+import re
 
 work_dir = "/data/work"
-remote_dir = os.getenv("backup_remote", "/data/remote")
-remote_protocol = os.getenv("backup_protocol", "local")
 zpaq_key = os.getenv("encryption_key", "")
 use_ip_in_path = os.getenv("backup_use_ip_in_path", "true") == "true"
 log_file_name = "/data/logs/backuper.log"
@@ -20,20 +23,111 @@ backup_tasks_dir = "/data/tasks"
 backup_name_unique_counter = 0
 
 backup_config = {
-    "name": "qwe",
     "local": {
-        "dirs": ["dir1", "dir2"],
         "exclude": ["*.tmp", "*.jar"],
         "include_only": []
     },
-
-    "remote": "mybackupbucket",
     "keep_incremental_backup_count": 10,
     "keep_full_backup_count": 3,
-    "backup_rate": "24h"
 }
 
 logger = None
+
+# backup config yaml format:
+#
+# local.exclude[]                array of exclusions
+# local.include_only[]           array of include only
+# keep_incremental_backup_count  how many incremental backups to keep
+# keep_full_backup_count         how many full backups to keep
+
+
+# abstraction over *nix process, supporting piping and parallel execution
+class Proc:
+
+    # cmd: [] list for Popen
+    # error: error string to include to exception if command fails
+    # stdin: if set, write this string to stdin of created process
+    def __init__(self, cmd, error="", stdin=None):
+        self.cmd = cmd
+        self.error = error
+        self.pipes = [[self]]
+        self.stdin = stdin
+
+    # pipe this proc to argument proc
+    def pipe(self, proc):
+        p = Proc(None, None)
+        p.pipes = [[self, proc]]
+        return p
+
+    # run this proc in parallel with argument proc
+    def par(self, proc):
+        p = Proc(None, None)
+        p.pipes = self.pipes + proc.pipes
+        return p
+
+    # run this proc, awaiting for result synchronously
+    # stderr and stdout (where appropriate) goes to out
+    def run(self, out):
+        pars = self._run(None, out)
+
+        while True:
+            has_running = False
+            error_msg = None
+            for par in pars:
+                code = par[0].poll()
+                if code is None:
+                    has_running = True
+                elif code != 0 and error_msg is None:
+                    error_msg = par[1]
+
+            if error_msg is not None:
+                for par in pars:
+                    try:
+                        par[0].kill()
+                    except OSError:
+                        pass
+                raise IOError(error_msg)
+
+            if not has_running:
+                return
+            time.sleep(0.05)
+
+    def _run(self, in_, out):
+        if self.cmd is not None:
+            if self.stdin is not None:
+                p = subprocess.Popen(self.cmd, stdout=out, stdin=subprocess.PIPE) # stderr=subprocess.STDOUT,
+                p.stdin.write(self.stdin)
+                p.stdin.close()
+                return [[p, self.error]]
+            else:
+                return [[subprocess.Popen(self.cmd, stdout=out, stdin=in_), self.error]]
+
+        result = []
+        for p in self.pipes:
+            if len(p) == 1:
+                rr = p[0]._run(in_, out)
+                result = result + rr
+            else:
+                rr1 = p[0]._run(in_, subprocess.PIPE)
+                src = rr1[-1]
+
+                rr2 = p[1]._run(src[0].stdout, out)
+
+                result = result + rr1 + rr2
+
+        return result
+
+    @staticmethod
+    def string_source(s):
+        return Proc(["cat"], "", s)
+
+    @staticmethod
+    def source(fname):
+        return Proc(["bash", "-c", "cat " + fname], "failed to open file" + fname)
+
+    @staticmethod
+    def sink(fname):
+        return Proc(["bash", "-c", "cat >" + fname], "failed to write to file" + fname)
 
 
 def unset_if_empty(envname):
@@ -95,57 +189,44 @@ def get_ip_address():
     return s.getsockname()[0]
 
 
+def parse_url(url):
+    i = url.find(":")
+    if i < 0:
+        raise Exception("illegal url: " + url)
+    class Url:
+        def __init__(self):
+            self.protocol = url[0:i]
+            self.path = url[i+1:]
+    return Url()
+
+
 # upload single file
 def upload(src, dst):
-    pr = subprocess.Popen([get_script_dir() + "/" + remote_protocol + "/upload", src, dst],
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    out, _ = pr.communicate()
-    pr.poll()
-    if pr.returncode == 0:
-        log_info(out)
-    else:
-        log_warn(out)
-        raise IOError("Upload " + src + " to " + dst + " failed")
+    u = parse_url(dst)
+    return Proc([get_script_dir() + "/" + u.protocol + "/upload", src, u.path], "Upload " + src + " to " + dst + " failed")
 
 
 # download single file
-def download(src, dst, protocol=remote_protocol):
-    pr = subprocess.Popen([get_script_dir() + "/" + protocol + "/download", src, dst],
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    out, _ = pr.communicate()
-    pr.poll()
-    if pr.returncode == 0:
-        log_info(out)
-    else:
-        log_warn(out)
-        raise IOError("Download " + src + " to " + dst + " failed")
+def download(src, dst):
+    u = parse_url(src)
+    return Proc([get_script_dir() + "/" + u.protocol + "/download", u.path, dst], "Download " + src + " to " + dst + " failed")
 
 
 def delete(src):
-    pr = subprocess.Popen([get_script_dir() + "/" + remote_protocol + "/delete", src],
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    out, _ = pr.communicate()
-    pr.poll()
-    if pr.returncode == 0:
-        log_info(out)
-    else:
-        log_warn(out)
-        raise IOError("Delete " + src + " failed")
+    u = parse_url(src)
+    return Proc([get_script_dir() + "/" + u.protocol + "/delete", u.path], "Delete " + src + " failed")
 
 
-def full_local_dir(name):
-    return work_dir + "/" + name
+def full_local_dir(url):
+    return work_dir + "/" + re.sub(r'\W', ".", url)
 
 
-def full_remote_dir(name, remote, full_backup_name):
-    return almost_full_remote_dir(name, remote) + "/" + full_backup_name
+def full_remote_dir(url, full_backup_name):
+    return almost_full_remote_dir(url) + "/" + full_backup_name
 
 
-def almost_full_remote_dir(name, remote):
-    if remote != "":
-        d = remote_dir + "/" + remote + "/" + name
-    else:
-        d = remote_dir + "/" + name
+def almost_full_remote_dir(url):
+    d = url
 
     if use_ip_in_path:
         d = d + "/" + get_ip_address()
@@ -153,19 +234,18 @@ def almost_full_remote_dir(name, remote):
     return d
 
 
-def compress(name, tmp_dir, options):
-    index_file = name + "00000.zpaq"
-    full_local = full_local_dir(name)
+def compress(url, tmp_dir, options):
+    index_file = "a00000.zpaq"
+    full_local = full_local_dir(url)
 
     if os.path.isfile(full_local + "/" + index_file):
-        log_info("Starting INCREMENTAL backup of " + name)
-        shutil.copyfile(full_local + "/" + index_file, tmp_dir + "/" + index_file)
+        log_info("Starting INCREMENTAL backup of " + url)
     else:
-        log_info("Starting FULL backup of " + name)
+        log_info("Starting FULL backup of " + url)
 
     zpaq_command = [get_script_dir() + "/zpaq",
                     "add",
-                    tmp_dir + '/' + name + "?????"] + options + ["-index", tmp_dir + "/" + index_file]
+                    tmp_dir + "/a?????"] + options + ["-index", tmp_dir + "/" + index_file]
     p = subprocess.Popen(zpaq_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out, _ = p.communicate()
     p.poll()
@@ -178,60 +258,56 @@ def compress(name, tmp_dir, options):
         log_info(out)
 
 
-def drop_incremental_backup_index(name):
-    try:
-        os.remove(full_local_dir(name) + "/" + name + "00000.zpaq")
-    except OSError as e:
-        log_warn(str(e))
-
-
-# last_backup_timestamp: long
+# local.exclude[]                array of exclusions
+# local.include_only[]           array of include only
+# keep_incremental_backup_count  how many incremental backups to keep
+# keep_full_backup_count         how many full backups to keep
+#
+#  last_backup_timestamp: long
 #  full_backups[].name
-#  full_backups[].path
 #  full_backups[].incremental_backups[]
 #  upload.files_uploaded[]
 #  upload.files_left[]
-
-def load_state(name):
-    ymlpath = full_local_dir(name) + "/" + name + ".yml"
-    try:
-        with open(ymlpath, mode="r") as f:
+#  index_version: string
+def load_state(url, password):
+    with pipe() as p:
+        with tempfile.NamedTemporaryFile(prefix="backuper-c-") as f:
+            download(url + "/index.yaml", p) \
+                .par(Proc.source(p)
+                     .pipe(Proc(["openssl", "aes-256-cbc", "-a", "-d", "-md", "sha256", "-pbkdf2", "-k", password],
+                                "state decryption failed, invalid password?"))
+                     ).run(f)
+            f.seek(0)
             return yaml.load(f.read())
-    except IOError:
-        return {
-            "last_backup_timestamp": 0,
-            "full_backups": []
-        }
 
 
-def save_state(name, state):
-    try:
-        os.makedirs(full_local_dir(name))
-    except os.error:
-        pass
+def save_state(url, state, password):
+    cfg = yaml.dump(state)
 
-    ymlpath = full_local_dir(name) + "/" + name + ".yml"
-    with open(ymlpath, mode="w") as f:
-        f.write(yaml.dump(state))
+    with pipe() as p:
+        Proc.string_source(cfg) \
+            .pipe(Proc(["openssl", "aes-256-cbc", "-a", "-md", "sha256", "-pbkdf2", "-k", password])) \
+            .pipe(Proc.sink(p)) \
+            .par(upload(p, url + "/index.yaml")).run(sys.stdout)
 
 
-def collect_options(local):
-    s = local["dirs"]
+def collect_options(local, password):
+    s = []
     if local["exclude"] is not None:
         for e in local["exclude"]:
             s += ["-not", e]
     if local["include_only"] is not None:
         for i in local["include_only"]:
             s += ["-only", i]
-    if zpaq_key != "":
-        s += ["-key", zpaq_key]
+    if password != "":
+        s += ["-key", password]
     return s
 
 
-def delete_full_backup(name, remote, full_backup_name):
-    rp = full_remote_dir(name, remote, full_backup_name)
+def delete_full_backup(url, full_backup_name):
+    rp = full_remote_dir(url, full_backup_name)
     try:
-        delete(rp)
+        delete(rp).run(sys.stdout)
     except IOError as e:
         log_warn(e.message)
 
@@ -244,49 +320,51 @@ def new_full_backup_name():
     return n
 
 
-def roll_full_backup(state, config):
-    name = config["name"]
+def roll_full_backup(url, state, password):
 
     def start_new_full_backup():
         nm = new_full_backup_name()
         state["full_backups"].append({
             "name": nm,
-            "path": remote_protocol + ":" + name + ":" + full_remote_dir(name, config["remote"], nm),
             "incremental_backups": []
         })
+        state["index_version"] = ""
 
     if len(state["full_backups"]) == 0:  # no backups at all? start new one!
         start_new_full_backup()
 
     current_full_backup = state["full_backups"][-1]
 
-    if len(current_full_backup["incremental_backups"]) > config["keep_incremental_backup_count"]:
+    if len(current_full_backup["incremental_backups"]) > state["keep_incremental_backup_count"]:
         # need to do full backup
-        drop_incremental_backup_index(name)
         start_new_full_backup()
-        save_state(name, state)
 
-    while len(state["full_backups"]) > config["keep_full_backup_count"]:
-        delete_full_backup(name, config["remote"], state["full_backups"][0]["name"])
+    backups_to_delete = []
+    while len(state["full_backups"]) > state["keep_full_backup_count"]:
+        backups_to_delete.append(state["full_backups"][0]["name"])
         del state["full_backups"][0]
-    save_state(name, state)
+    save_state(url, state, password)
+
+    for name in backups_to_delete:
+        delete_full_backup(url, name)
 
 
-def perform_backup(state, config):
-    name = config["name"]
-
-    roll_full_backup(state, config)
+def perform_backup(url, dirs, password):
+    state = load_state(url, password)
+    roll_full_backup(url, state, password)
 
     current_full_backup = state["full_backups"][-1]
 
-    full_remote = full_remote_dir(name, config["remote"], current_full_backup["name"])
-    full_local = full_local_dir(name)
-    index_file = name + "00000.zpaq"
-    tmp_dir = full_local + "/tmp"
+    full_remote = full_remote_dir(url, current_full_backup["name"])
+    local_dir = full_local_dir(url)
+    index_file = "a00000.zpaq"
 
-    def clean_tmp_dir():
-        shutil.rmtree(tmp_dir, True)
-        os.makedirs(tmp_dir)
+    def remote_index(version):
+        return full_remote + "/" + index_file + "." + version
+
+    def clean_local_dir():
+        shutil.rmtree(local_dir, True)
+        os.makedirs(local_dir)
 
     def forall(l, iterable):
         for e in iterable:
@@ -297,41 +375,51 @@ def perform_backup(state, config):
     # we have pending upload if:
     # - uploaded and pending files are still there
     # - index file is still there
-    # - least one file is left
+    # - at least one file is left
     is_upload_in_progress = "upload" in state \
         and "files_uploaded" in state["upload"] \
         and "files_left" in state["upload"] \
         and len(state["upload"]["files_left"]) > 0 \
-        and os.path.isdir(tmp_dir) \
+        and os.path.isdir(local_dir) \
         and len(state["upload"]["files_left"]) \
-        and os.path.isfile(tmp_dir + "/" + index_file) \
-        and forall(lambda ff: os.path.isfile(tmp_dir + "/" + ff), state["upload"]["files_left"]) \
-        and forall(lambda ff: os.path.isfile(tmp_dir + "/" + ff), state["upload"]["files_uploaded"])
+        and os.path.isfile(local_dir + "/" + index_file) \
+        and forall(lambda ff: os.path.isfile(local_dir + "/" + ff), state["upload"]["files_left"]) \
+        and forall(lambda ff: os.path.isfile(local_dir + "/" + ff), state["upload"]["files_uploaded"])
 
     if not is_upload_in_progress:
-        clean_tmp_dir()
-        compress(name, tmp_dir, collect_options(config["local"]))
-        files = filter(lambda f: os.path.isfile(tmp_dir + "/" + f) and f != index_file, os.listdir(tmp_dir))
+        clean_local_dir()
+        if state["index_version"] != "":
+            download(remote_index(state["index_version"]), local_dir + "/" + index_file).run(sys.stdout)
+        compress(url, local_dir, dirs + collect_options(state["local"], password))
+        files = filter(lambda f: os.path.isfile(local_dir + "/" + f) and f != index_file, os.listdir(local_dir))
         state["upload"] = {"files_uploaded": [], "files_left": files}
     else:
         files = state["upload"]["files_left"]
         log_info("Resuming upload, files left are: " + str(state["upload"]["files_left"]))
 
+    save_state(url, state, password)
     for f in files:
-        save_state(name, state)
-        upload(tmp_dir + "/" + f, full_remote + "/" + f)
+        upload(local_dir + "/" + f, full_remote + "/" + f).run(sys.stdout)
         state["upload"]["files_left"].remove(f)
         state["upload"]["files_uploaded"].append(f)
-        save_state(name, state)
+        save_state(url, state, password)
+
+    index_version_old = state["index_version"]
+    index_version_new = str(time.time())
+
+    upload(local_dir + "/" + index_file, remote_index(index_version_new)).run(sys.stdout)
+
+    state["index_version"] = index_version_new
 
     # totally commit
-    shutil.move(tmp_dir + "/" + index_file, full_local + "/" + index_file)
     state["last_backup_timestamp"] = int(time.time())
     current_full_backup["incremental_backups"].append(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-    save_state(name, state)
+    save_state(url, state, password)
 
-    clean_tmp_dir()
-    log_info("Backup " + name + " complete")
+    delete(remote_index(index_version_old)).run(sys.stdout)
+
+    clean_local_dir()
+    log_info("Backup " + url + " complete")
 
 
 #
@@ -370,155 +458,129 @@ def load_backup_configs():
     return result
 
 
-def parse_backup_rate(s):
-    if s.endswith("d"):
-        return int(s[0:-1]) * 24 * 60 * 60
-    if s.endswith("h"):
-        return int(s[0:-1]) * 60 * 60
-    if s.endswith("m"):
-        return int(s[0:-1]) * 60
-    raise Exception("Invalid backup rate, must be 1d / 1h / 1m:" + s)
-
-
-def restore_names():
-    conf = load_backup_configs()
-    return map(lambda c: c["config"]["name"], conf)
-
-
-# [].url
+# [].version
 # [].date
-def restore_urls(name):
-    conf = load_backup_configs()
-    for c in conf:
-        if not c["config"]["name"] == name:
-            continue
-
-        r = []
-        for fb in c["state"]["full_backups"]:
-            i = 1
-            for ib in fb["incremental_backups"]:
-                r.append({
-                    "url": fb["path"] + "#" + str(i),
-                    "date": ib
-                })
-                i += 1
-        return r
-
-    return []
+def restore_urls(state):
+    r = []
+    for fb in state["full_backups"]:
+        i = 1
+        for ib in fb["incremental_backups"]:
+            r.append({
+                "version": fb["name"] + ":" + str(i),
+                "date": ib
+            })
+            i += 1
+    return r
 
 
-# restore backup by backup URL
+# restore backup by backup URL and version
 # please note that archive keep absolute file names and extraction will work in the same way
 # if you want to extract to somewhere else, use second parameter
-def restore(url, to=""):
-    i_first_colon = url.index(":")
-    i_second_colon = url.index(":", i_first_colon + 1)
+def restore(url, version, password, to=""):
+    parts = version.split(":")
+    if len(parts) != 2:
+        raise Exception("Incorrect version: " + version)
+    name = parts[0]
+    v = parts[1]
+    base = full_remote_dir(url, name)
+    work_dir = full_local_dir(url) + "/restore"
 
-    protocol = url[0: i_first_colon]
-    name = url[i_first_colon + 1: i_second_colon]
-    real_url = url[i_second_colon + 1: url.rindex("#")]
-    n = int(url[url.rindex("#") + 1:])
+    state = load_state(url, password)
+    download(base + "/a00000.zpaq." + state["index_version"], work_dir + "/a00000.zpaq").run(sys.stdout)
 
-    # download archive
-    for i in range(1, n + 1):
-        fname = name + str(i).zfill(5) + ".zpaq"
-        download(real_url + "/" + fname, work_dir + "/restore/" + fname, protocol)
+    # download archives
+    for i in range(1, int(v) + 1):
+        fname = "a" + str(i).zfill(5) + ".zpaq"
+        download(base + "/" + fname, work_dir + "/" + fname).run(sys.stdout)
 
     # invoke zpaq
-    args = [get_script_dir() + "/zpaq", "extract", work_dir + "/restore/" + name + "?????.zpaq", "-until", str(n),
+    args = [get_script_dir() + "/zpaq", "extract", work_dir + "/a?????.zpaq", "-until", v,
             "-force"]
 
     if to != "":
         args += ["-to", to]
 
-    if zpaq_key != "":
-        args += ["-key", zpaq_key]
+    if password != "":
+        args += ["-key", password]
     subprocess.call(args)
     pass
 
 
-# [].file - short file name of task
-# [].name - backup task name
-def backup_tasks():
-    if not os.path.exists(backup_tasks_dir):
-        os.makedirs(backup_tasks_dir)
-
-    result = []
-
-    for f in os.listdir(backup_tasks_dir):
-        p = os.path.join(backup_tasks_dir, f)
-        if os.path.isfile(p) and not f.endswith("-ok") and not f.endswith("-error"):
-            try:
-                with open(p, "r") as ff:
-                    name = ff.read().strip()
-                    result.append({
-                        "name": name,
-                        "file": f
-                    })
-            except OSError as e:
-                log_warn("Unable to open backup task " + f + ": " + str(e))
-                pass
-
-    result.sort(key=lambda a: a['file'])
-    return result
+def create_backup(url, password, config):
+    pass
 
 
-def commit_backup_task(f, url, error):
-    if not os.path.exists(backup_tasks_dir):
-        os.makedirs(backup_tasks_dir)
+def pipe():
+    class Pipe:
+        def __enter__(self):
+            f = tempfile.NamedTemporaryFile(prefix="backuper-p-")
+            f.close()
+            self.fname = f.name
+            Proc(["mkfifo", self.fname]).run(sys.stdout)
+            return self.fname
 
-    try:
-        os.remove(os.path.join(backup_tasks_dir, f))
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            os.remove(self.fname)
 
-        if url != "":
-            with open(os.path.join(backup_tasks_dir, f + "-ok"), "w") as ff:
-                ff.write(url)
-        else:
-            with open(os.path.join(backup_tasks_dir, f + "-error"), "w") as ff:
-                ff.write(error)
-    except OSError:
-        pass
-
-
-def process_backup_tasks():
-    tasks = backup_tasks()
-    if len(tasks) == 0:
-        return
-    confs = load_backup_configs()
-
-    def get_config(name):
-        for conf in confs:
-            if conf["config"]["name"] == name:
-                return conf
-        return None
-
-    for task in tasks:
-        c = get_config(task["name"])
-        if c is None:
-            err = "Failed to process task " + task["file"] + ": Unknown backup name " + task["name"]
-            log_error(err)
-            commit_backup_task(task["file"], "", err)
-
-        perform_backup(c["state"], c["config"])
-        last_backup = c["state"]["full_backups"][-1]
-        url = last_backup["path"] + "#" + str(len(last_backup["incremental_backups"]))
-        commit_backup_task(task["file"], url, "")
-
-
-def process_scheduled_backups():
-    conf = load_backup_configs()
-    now = int(time.time())
-    for c in conf:
-        config = c["config"]
-        try:
-            state = c["state"]
-            if now - state["last_backup_timestamp"] > parse_backup_rate(config["backup_rate"]):
-                perform_backup(state, config)
-        except Exception as e:
-            log_error("Failed to backup " + str(config.get("name")) + ": " + str(e))
+    return Pipe()
 
 
 def main():
+    save_state("local:.", {
+        "local": {
+            "exclude": ["*.tmp"],
+            "include_only": [],
+        },
+        "keep_incremental_backup_count": 10,
+        "keep_full_backup_count": 3,
+        "last_backup_timestamp": 0,
+        "full_backups": [],
+        "index_version": ""
+    }, "password")
+    print(load_state("local:.", "password"))
+    return
+
+    p1 = Proc(["bash", "-c", "sleep 1; echo hello"], "p1 failed")
+    p2 = Proc(["bash", "-c", "echo world"], "p2 failed")
+
+    s0 = Proc(["cat", "/home/asm/replay_pid12823.log"], "s0 failed")
+    s1 = Proc(["gzip"], "s1 failed")
+    s2 = Proc(["gzip", "-d"], "s2 failed")
+
+    s0.pipe(s1).pipe(s2).pipe(Proc.sink("1")).run(sys.stdout)
+
+    Proc.string_source("hello, world!").pipe(Proc(["base64"])).run(sys.stdout)
+
+    p1.par(p2).run(sys.stdout)
+
+    return
+    pr = subprocess.Popen(["bash", "-c", "echo hello | gzip"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    fd = pr.stdout.fileno()
+    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+    hasData = True
+    while pr.poll() is None or hasData:
+        try:
+            s = pr.stdout.read(50)
+            if len(s) > 0:
+                sys.stdout.write(s)
+            if pr.poll() is not None and len(s) == 0:
+                hasData = False
+        except IOError:
+            pass
+        time.sleep(0.1)
+    return
+
+    with string_pipe("hello, world!") as p:
+        print(execute(["cat", p]))
+
+    return
+
+    print(executes([["sleep", "1s"], ["sleep", "5s"]], sys.stdout))
+    return
+
+
     # aws cli does not like empty access keys - so if they are missing, unset them!
     unset_if_empty("AWS_ACCESS_KEY_ID")
     unset_if_empty("AWS_SECRET_ACCESS_KEY")

@@ -299,21 +299,20 @@ def login(user_: str, domain_: str, password_: str):
         return text[i1 + 1:i2]
 
     data = {
-        "page": "https://cloud.mail.ru/?from-page=promo&from-promo=blue-2018&from=signin",
-        "FailPage": "",
-        "Domain": domain_,
-        "Login": user_,
+        "page": "https://cloud.mail.ru/?authid=k8ytqr5f.ldi&dwhsplit=s6763.a1s&from=login&from-page=promo&from-promo=blue-2018",
+        "Login": user_ + '@' + domain_,
         "Password": password_,
         "new_auth_form": "1",
         "saveauth": "1"
     }
-    resp = _req('post', 'https://auth.mail.ru/cgi-bin/auth?lang=ru_RU&from=authpopup', data)
+    resp = _req('post', 'https://auth.mail.ru/cgi-bin/auth', data)
     if resp.status_code >= 400:
         print("Authentication failed: " + str(resp.status_code))
         print(resp.headers)
         exit(1)
 
     resp = _req('get', 'https://cloud.mail.ru/?from=promo&from=authpopup')
+    print(resp)
     if resp.status_code > 200 or '"csrf"' not in resp.text:
         print("Authentication failed(2): " + str(resp.status_code))
         print(resp.headers)
