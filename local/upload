@@ -7,6 +7,6 @@ fi
 
 mkdir -p $(dirname $2)
 
-echo "Uploading $1 -> $2" > /dev/stderr
+echo "Uploading $1 -> $2"
 
 cp -f $1 $2

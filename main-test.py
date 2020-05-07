@@ -99,7 +99,6 @@ class MyTest(unittest.TestCase):
         def perform_backup():
             with open(dirs[0] + "/some.file", "w") as f:
                 f.write("some content" + str(time.time()))
-            print("url=" + url + ", dirs=" + str(dirs))
             main.perform_backup(url, dirs, self.password)
 
         perform_backup()

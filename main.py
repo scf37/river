@@ -15,23 +15,9 @@ import hashlib
 import re
 
 work_dir = "/data/work"
-zpaq_key = os.getenv("encryption_key", "")
 use_ip_in_path = os.getenv("backup_use_ip_in_path", "true") == "true"
-log_file_name = "/data/logs/backuper.log"
-backup_config_dir = "/data/conf"
-backup_tasks_dir = "/data/tasks"
 backup_name_unique_counter = 0
-
-backup_config = {
-    "local": {
-        "exclude": ["*.tmp", "*.jar"],
-        "include_only": []
-    },
-    "keep_incremental_backup_count": 10,
-    "keep_full_backup_count": 3,
-}
-
-logger = None
+stdout = open("/dev/null", "w") # sys.stdout
 
 # backup config yaml format:
 #
@@ -66,9 +52,9 @@ class Proc:
         return p
 
     # run this proc, awaiting for result synchronously
-    # stderr and stdout (where appropriate) goes to out
-    def run(self, out):
-        pars = self._run(None, out)
+    # stdout (where appropriate) goes to out, stderr goes to err
+    def run(self, out=None, err=None):
+        pars = self._run(None, out, err)
 
         while True:
             has_running = False
@@ -92,26 +78,26 @@ class Proc:
                 return
             time.sleep(0.05)
 
-    def _run(self, in_, out):
+    def _run(self, in_, out, err):
         if self.cmd is not None:
             if self.stdin is not None:
-                p = subprocess.Popen(self.cmd, stdout=out, stdin=subprocess.PIPE) # stderr=subprocess.STDOUT,
+                p = subprocess.Popen(self.cmd, stdout=out, stdin=subprocess.PIPE, stderr=err) # stderr=subprocess.STDOUT,
                 p.stdin.write(self.stdin)
                 p.stdin.close()
                 return [[p, self.error]]
             else:
-                return [[subprocess.Popen(self.cmd, stdout=out, stdin=in_), self.error]]
+                return [[subprocess.Popen(self.cmd, stdout=out, stdin=in_, stderr=err), self.error]]
 
         result = []
         for p in self.pipes:
             if len(p) == 1:
-                rr = p[0]._run(in_, out)
+                rr = p[0]._run(in_, out, err)
                 result = result + rr
             else:
-                rr1 = p[0]._run(in_, subprocess.PIPE)
+                rr1 = p[0]._run(in_, subprocess.PIPE, err)
                 src = rr1[-1]
 
-                rr2 = p[1]._run(src[0].stdout, out)
+                rr2 = p[1]._run(src[0].stdout, out, err)
 
                 result = result + rr1 + rr2
 
@@ -128,49 +114,6 @@ class Proc:
     @staticmethod
     def sink(fname):
         return Proc(["bash", "-c", "cat >" + fname], "failed to write to file" + fname)
-
-
-def unset_if_empty(envname):
-    if envname in os.environ and os.environ[envname] == "":
-        os.unsetenv(envname)
-
-
-def init_logging():
-    global logger
-
-    if logger is None:
-        logger = logging.getLogger("backuper")  # log_namespace can be replaced with your namespace
-        logger.setLevel(logging.DEBUG)
-        if not logger.handlers:
-            file_name = log_file_name
-            try:
-                handler = logging.FileHandler(file_name)
-            except IOError as e:
-                print("Unable to use log file " + file_name + ": " + str(e))
-                print("Switching to stdout")
-                handler = logging.StreamHandler(sys.stdout)
-            # [2016-12-16T18:43:41.191Z] [sgs] [INFO]
-            formatter = logging.Formatter('[%(asctime)s] [backuper] [%(name)s] [%(levelname)s]: %(message)s',
-                                          '%Y-%m-%dT%H:%M:%SZ')
-            logging.Formatter.converter = time.gmtime
-            handler.setFormatter(formatter)
-            handler.setLevel(logging.DEBUG)
-            logger.addHandler(handler)
-
-
-def log_info(s):
-    init_logging()
-    logger.info(s.replace("\n", "\n  "))
-
-
-def log_warn(s):
-    init_logging()
-    logger.warning(s.replace("\n", "\n  "))
-
-
-def log_error(s):
-    init_logging()
-    logger.error(s.replace("\n", "\n  "))
 
 
 def get_script_dir():
@@ -222,40 +165,34 @@ def full_local_dir(url):
 
 
 def full_remote_dir(url, full_backup_name):
-    return almost_full_remote_dir(url) + "/" + full_backup_name
-
-
-def almost_full_remote_dir(url):
     d = url
 
     if use_ip_in_path:
         d = d + "/" + get_ip_address()
 
-    return d
+    return d + "/" + full_backup_name
 
 
-def compress(url, tmp_dir, options):
+def compress(tmp_dir, options):
     index_file = "a00000.zpaq"
-    full_local = full_local_dir(url)
-
-    if os.path.isfile(full_local + "/" + index_file):
-        log_info("Starting INCREMENTAL backup of " + url)
-    else:
-        log_info("Starting FULL backup of " + url)
-
     zpaq_command = [get_script_dir() + "/zpaq",
                     "add",
                     tmp_dir + "/a?????"] + options + ["-index", tmp_dir + "/" + index_file]
-    p = subprocess.Popen(zpaq_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    out, _ = p.communicate()
-    p.poll()
 
-    if p.returncode != 0:
-        log_error(out)
-        log_error("zpaq invocation failed")
-        raise IOError("zpaq invocation failed")
-    else:
-        log_info(out)
+    with tempfile.NamedTemporaryFile(prefix="backuper-c-") as f:
+        try:
+            Proc(zpaq_command, "zpaq invocation failed").run(stdout, f)
+        except Exception as e:
+            f.seek(0)
+            sys.stderr.write(f.read())
+
+    # p = subprocess.Popen(zpaq_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # out, _ = p.communicate()
+    # p.poll()
+    #
+    # if p.returncode != 0:
+    #     sys.stderr.write(out)
+    #     raise IOError("zpaq invocation failed")
 
 
 # local.exclude[]                array of exclusions
@@ -265,30 +202,39 @@ def compress(url, tmp_dir, options):
 #
 #  last_backup_timestamp: long
 #  full_backups[].name
-#  full_backups[].incremental_backups[]
+#  full_backups[].incremental_backups[] # incremental backup timestamp
 #  upload.files_uploaded[]
 #  upload.files_left[]
 #  index_version: string
 def load_state(url, password):
     with pipe() as p:
         with tempfile.NamedTemporaryFile(prefix="backuper-c-") as f:
-            download(url + "/index.yaml", p) \
-                .par(Proc.source(p)
-                     .pipe(Proc(["openssl", "aes-256-cbc", "-a", "-d", "-md", "sha256", "-pbkdf2", "-k", password],
-                                "state decryption failed, invalid password?"))
-                     ).run(f)
+            if password != "":
+                download(url + "/index.yaml", p).pipe(Proc.sink("/dev/null")) \
+                    .par(Proc.source(p)
+                         .pipe(Proc(["openssl", "aes-256-cbc", "-a", "-d", "-md", "sha256", "-pbkdf2", "-k", password],
+                                    "state decryption failed, invalid password?"))
+                         ).run(f)
+            else:
+                download(url + "/index.yaml", p).pipe(Proc.sink("/dev/null")) \
+                    .par(Proc.source(p)).run(f)
             f.seek(0)
-            return yaml.load(f.read())
+            return yaml.safe_load(f.read())
 
 
 def save_state(url, state, password):
     cfg = yaml.dump(state)
 
     with pipe() as p:
-        Proc.string_source(cfg) \
-            .pipe(Proc(["openssl", "aes-256-cbc", "-a", "-md", "sha256", "-pbkdf2", "-k", password])) \
-            .pipe(Proc.sink(p)) \
-            .par(upload(p, url + "/index.yaml")).run(sys.stdout)
+        if password != "":
+            Proc.string_source(cfg) \
+                .pipe(Proc(["openssl", "aes-256-cbc", "-a", "-md", "sha256", "-pbkdf2", "-k", password])) \
+                .pipe(Proc.sink(p)) \
+                .par(upload(p, url + "/index.yaml")).run(stdout)
+        else:
+            Proc.string_source(cfg) \
+                .pipe(Proc.sink(p)) \
+                .par(upload(p, url + "/index.yaml")).run(stdout)
 
 
 def collect_options(local, password):
@@ -307,9 +253,9 @@ def collect_options(local, password):
 def delete_full_backup(url, full_backup_name):
     rp = full_remote_dir(url, full_backup_name)
     try:
-        delete(rp).run(sys.stdout)
+        delete(rp).run(stdout)
     except IOError as e:
-        log_warn(e.message)
+        pass
 
 
 def new_full_backup_name():
@@ -389,17 +335,17 @@ def perform_backup(url, dirs, password):
     if not is_upload_in_progress:
         clean_local_dir()
         if state["index_version"] != "":
-            download(remote_index(state["index_version"]), local_dir + "/" + index_file).run(sys.stdout)
-        compress(url, local_dir, dirs + collect_options(state["local"], password))
+            download(remote_index(state["index_version"]), local_dir + "/" + index_file).run(stdout)
+        compress(local_dir, dirs + collect_options(state["local"], password))
         files = filter(lambda f: os.path.isfile(local_dir + "/" + f) and f != index_file, os.listdir(local_dir))
         state["upload"] = {"files_uploaded": [], "files_left": files}
     else:
         files = state["upload"]["files_left"]
-        log_info("Resuming upload, files left are: " + str(state["upload"]["files_left"]))
+#        log_info("Resuming upload, files left are: " + str(state["upload"]["files_left"]))
 
     save_state(url, state, password)
     for f in files:
-        upload(local_dir + "/" + f, full_remote + "/" + f).run(sys.stdout)
+        upload(local_dir + "/" + f, full_remote + "/" + f).run(stdout)
         state["upload"]["files_left"].remove(f)
         state["upload"]["files_uploaded"].append(f)
         save_state(url, state, password)
@@ -407,7 +353,7 @@ def perform_backup(url, dirs, password):
     index_version_old = state["index_version"]
     index_version_new = str(time.time())
 
-    upload(local_dir + "/" + index_file, remote_index(index_version_new)).run(sys.stdout)
+    upload(local_dir + "/" + index_file, remote_index(index_version_new)).run(stdout)
 
     state["index_version"] = index_version_new
 
@@ -416,46 +362,10 @@ def perform_backup(url, dirs, password):
     current_full_backup["incremental_backups"].append(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     save_state(url, state, password)
 
-    delete(remote_index(index_version_old)).run(sys.stdout)
+    delete(remote_index(index_version_old)).run(stdout)
 
     clean_local_dir()
-    log_info("Backup " + url + " complete")
-
-
-#
-# []config
-# []config.name
-#  ....
-# []state
-# []state.last_backup_timestamp .....
-def load_backup_configs():
-    conf_files = []
-    if not os.path.exists(backup_config_dir):
-        os.makedirs(backup_config_dir)
-    try:
-        for f in os.listdir(backup_config_dir):
-            ff = os.path.join(backup_config_dir, f)
-            if os.path.isfile(ff) and f.endswith(".yml"):
-                conf_files.append(ff)
-    except OSError as e:
-        log_warn("Unable to load backup configuration: " + str(e))
-        return []
-
-    result = []
-
-    for f in conf_files:
-        try:
-            with open(f, "r") as ff:
-                config = yaml.load(ff.read())
-            state = load_state(config["name"])
-            result.append({
-                "config": config,
-                "state": state
-            })
-        except Exception as e:
-            log_warn("Failed to load config file " + f + ": " + str(e))
-
-    return result
+#    log_info("Backup " + url + " complete")
 
 
 # [].version
@@ -486,12 +396,12 @@ def restore(url, version, password, to=""):
     work_dir = full_local_dir(url) + "/restore"
 
     state = load_state(url, password)
-    download(base + "/a00000.zpaq." + state["index_version"], work_dir + "/a00000.zpaq").run(sys.stdout)
+    download(base + "/a00000.zpaq." + state["index_version"], work_dir + "/a00000.zpaq").run(stdout)
 
     # download archives
     for i in range(1, int(v) + 1):
         fname = "a" + str(i).zfill(5) + ".zpaq"
-        download(base + "/" + fname, work_dir + "/" + fname).run(sys.stdout)
+        download(base + "/" + fname, work_dir + "/" + fname).run(stdout)
 
     # invoke zpaq
     args = [get_script_dir() + "/zpaq", "extract", work_dir + "/a?????.zpaq", "-until", v,
@@ -502,6 +412,7 @@ def restore(url, version, password, to=""):
 
     if password != "":
         args += ["-key", password]
+
     subprocess.call(args)
     pass
 
@@ -516,7 +427,7 @@ def pipe():
             f = tempfile.NamedTemporaryFile(prefix="backuper-p-")
             f.close()
             self.fname = f.name
-            Proc(["mkfifo", self.fname]).run(sys.stdout)
+            Proc(["mkfifo", self.fname]).run(stdout)
             return self.fname
 
         def __exit__(self, exc_type, exc_val, exc_tb):
@@ -547,11 +458,11 @@ def main():
     s1 = Proc(["gzip"], "s1 failed")
     s2 = Proc(["gzip", "-d"], "s2 failed")
 
-    s0.pipe(s1).pipe(s2).pipe(Proc.sink("1")).run(sys.stdout)
+    s0.pipe(s1).pipe(s2).pipe(Proc.sink("1")).run(stdout)
 
-    Proc.string_source("hello, world!").pipe(Proc(["base64"])).run(sys.stdout)
+    Proc.string_source("hello, world!").pipe(Proc(["base64"])).run(stdout)
 
-    p1.par(p2).run(sys.stdout)
+    p1.par(p2).run(stdout)
 
     return
     pr = subprocess.Popen(["bash", "-c", "echo hello | gzip"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -585,10 +496,9 @@ def main():
     unset_if_empty("AWS_ACCESS_KEY_ID")
     unset_if_empty("AWS_SECRET_ACCESS_KEY")
 
-    log_info("Starting Backuper")
-    conf = load_backup_configs()
-    if len(conf) == 0:
-        log_warn("No configuration files loaded")
+    # conf = load_backup_configs()
+    # if len(conf) == 0:
+    #     log_warn("No configuration files loaded")
 
     tick = 0
     while True:
@@ -600,6 +510,251 @@ def main():
         time.sleep(1)
         tick += 1
 
+# backuper configuration file:
+# exclude: []
+# include_only: []
+# keep_incremental_backup_count  how many incremental backups to keep
+# keep_full_backup_count         how many full backups to keep
+
+# backuper commands:
+# create-config <config file>
+# create <url> <config file>
+# update <url> <config file>
+# delete <url>
+# list <url>
+# backup <url> <dir(s) to backup>
+# restore <url> <version> [target directory]
+
+
+example_config = """# This is backuper conflguration file
+# Pass it to 'backuper create' or 'backuper update' command
+
+# Comma-separated masks of files to exclude
+# Example: ["*.tmp", "*/junk/*"]
+exclude: []
+
+# Comma-separated masks of files to include
+# Example: ["*.jpg"]
+include_only: []
+
+# How many incremental backups to keep within single full backup
+# When this limit reached, new full backup will be started
+keep_incremental_backup_count: 30
+
+# How many full backups to keep
+# When this limit is reached, oldest backup will be deleted
+keep_full_backup_count: 3
+
+# Encrypt backups if true
+# Encryption key must be passed to backuper via backuper_key environment variable
+use_encryption: false
+"""
+
+def help():
+    sys.stderr.write("Usage: backuper.py [-v] <command> [backup url, if applicable] <command arguments>\n")
+    sys.stderr.write("Backups directories to remote locations, supporting incremental backups,\n")
+    sys.stderr.write("  compression, encryption, backup rolling and easy custom connectors.\n")
+    sys.stderr.write("\n")
+    sys.stderr.write("Backup url is <connector>:<connector-specific path>\n")
+    sys.stderr.write("Supported connector names are directory names under this script\n")
+    sys.stderr.write("  directory which contains connector scripts.\n")
+    sys.stderr.write("\n")
+    sys.stderr.write("Supported commands:\n")
+    sys.stderr.write("create-config <config file>       Create example backup configuration file\n")
+    sys.stderr.write("create <url> <config file>        Create new remote backup at this url with this config\n")
+    sys.stderr.write("update <url> <config file>        Update configuration of existing remote backup\n")
+    sys.stderr.write("delete <url>                      Delete remote backup, irreversibly\n")
+    sys.stderr.write("list <url>                        Show remote backup configuration and available versions for "
+                     "restore \n")
+    sys.stderr.write("backup <url> <dirs>               Perform incremental backup on space-separated directories\n")
+    sys.stderr.write("restore <url> <version> [target]  Restore backup at specified version. Files will be restored "
+                     "under target\n")
+    sys.stderr.write("directory if provided, otherwise files will be restored inplace.\n")
+    sys.stderr.write("\n")
+    sys.stderr.write("If backup encryption is used, encryption password must be provided in backuper_key environment "
+                     "variable.\n")
+
+
+def help_on_error(result):
+    if result is not None and "error" in result:
+        sys.stderr.write("error: " + cmd["error"] + "\n")
+        sys.stderr.write("\n")
+        help()
+        sys.exit(1)
+
+
+def fail(msg):
+    sys.stderr.write(msg + "\n")
+    sys.exit(2)
+
+
+def parse_command(argv):
+    if len(argv) < 2:
+        return {"error": "Command not specified"}
+
+    if argv[1] == "-v":
+        argv = [argv[0]] + argv[2:]
+        global stdout
+        stdout = sys.stdout
+
+    if argv[1] not in commands:
+        return {"error": "Unknown command " + argv[1]}
+
+    cmd = commands[argv[1]]
+    param_count = len(argv) - 2
+
+    if param_count < cmd[1]:
+        return {"error": "Not enough arguments for command " + argv[1]}
+
+    if cmd[2] is not None and param_count > cmd[2]:
+        return {"error": "Too many arguments for command " + argv[1]}
+
+    return {
+        "cmd": cmd[0],
+        "params": argv[2:]
+    }
+
+
+def normalize_url(url):
+    if url.endswith("/"):
+        return url[:-1]
+    else:
+        return url
+
+
+def psw():
+    if "backuper_key" in os.environ:
+        return os.environ["backuper_key"]
+    else:
+        return ""
+
+
+def update_config(state, cfg):
+    def check_list(name):
+        for e in cfg[name]:
+            if not isinstance(e, str):
+                fail(name + " must only contain strings")
+
+    def check(name, tpe):
+        if not isinstance(cfg[name], tpe):
+            fail(name + " must be " + tpe)
+
+
+    check_list("exclude")
+    check_list("include_only")
+    check("keep_incremental_backup_count", int)
+    check("keep_full_backup_count", int)
+    check("use_encryption", bool)
+
+    state["local"]["exclude"] = cfg["exclude"]
+    state["local"]["include_only"] = cfg["include_only"]
+    state["keep_incremental_backup_count"] = cfg["keep_incremental_backup_count"]
+    state["keep_full_backup_count"] = cfg["keep_full_backup_count"]
+    state["use_encryption"] = cfg["use_encryption"]
+
+
+def cmd_create_config(args):
+    if os.path.exists(args[0]):
+        fail("File " + args[0] + " already exists, refusing to overwrite")
+    with open(args[0], "w") as f:
+        f.write(example_config)
+    pass
+
+
+def cmd_create(args):
+    url = normalize_url(args[0])
+    cfg_file = args[1]
+    if not os.path.exists(cfg_file):
+        fail("Configuration file not found: " + cfg_file)
+
+    with open(cfg_file) as f:
+        cfg = yaml.safe_load(f.read())
+
+    state = {
+        "local": {
+            "exclude": [],
+            "include_only": [],
+        },
+        "keep_incremental_backup_count": 10,
+        "keep_full_backup_count": 3,
+        "last_backup_timestamp": 0,
+        "full_backups": [],
+        "index_version": "",
+        "use_encryption": False
+    }
+
+    update_config(state, cfg)
+
+    try:
+        download(url + "/index.yaml", "/dev/null").pipe(Proc.sink("/dev/null")).run(stdout, stdout)
+        fail("Backup already exists at url " + args[0])
+    except Exception as e:
+        pass
+
+    if psw() != "":
+        if not state["use_encryption"]:
+            fail("Password is provided via backuper_key env variable but encryption is disabled in config")
+    else:
+        if state["use_encryption"]:
+            fail("Encryption is enabled in config but password not provided via backuper_key env variable")
+
+    save_state(url, state, psw())
+
+
+def cmd_update(args):
+    url = normalize_url(args[0])
+    cfg_file = args[1]
+    if not os.path.exists(cfg_file):
+        fail("Configuration file not found: " + cfg_file)
+
+    with open(cfg_file) as f:
+        cfg = yaml.safe_load(f.read())
+
+    state = load_state(url, psw())
+
+    update_config(state, cfg)
+
+    if psw() != "":
+        if not state["use_encryption"]:
+            fail("Password is provided via backuper_key env variable but encryption is disabled in config")
+    else:
+        if state["use_encryption"]:
+            fail("Encryption is enabled in config but password not provided via backuper_key env variable")
+
+    save_state(url, state, psw())
+
+
+def cmd_delete(args):
+    delete(args[0]).run(stdout)
+    pass
+
+
+def cmd_list(args):
+    pass
+
+
+def cmd_backup(args):
+    pass
+
+
+def cmd_restore(args):
+    pass
+
+
+commands = {
+    "create-config": [cmd_create_config, 1, 1],
+    "create": [cmd_create, 2, 2],
+    "update": [cmd_update, 2, 2],
+    "delete": [cmd_delete, 1, 1],
+    "list": [cmd_list, 1, 1],
+    "backup": [cmd_backup, 2, None],
+    "restore": [cmd_restore, 3, None]
+}
+
 
 if __name__ == "__main__":
-    main()
+    cmd = parse_command(sys.argv)
+    help_on_error(cmd)
+
+    result = cmd["cmd"](cmd["params"])
+    help_on_error(result)
