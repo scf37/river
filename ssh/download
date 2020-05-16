@@ -15,4 +15,4 @@ mkdir -p $(dirname $2)
 host=$(echo "$1" | cut -d ":" -f 1)
 file=$(echo "$1" | cut -d ":" -f 2)
 
-ssh $host "cat $file" | cat > $2
+ssh $SSH_OPTS $host "cat $file" | cat > $2

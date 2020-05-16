@@ -9,5 +9,5 @@ host=$(echo "$1" | cut -d ":" -f 1)
 file=$(echo "$1" | cut -d ":" -f 2)
 
 if [ "$file" != "" ] && [ "$file" != "/" ] && [ "$file" != "." ]; then
-    ssh $host "rm -rf $file"
+    ssh $SSH_OPTS $host "rm -rf $file"
 fi
