@@ -15,7 +15,7 @@ import hashlib
 import re
 
 work_dir = "/tmp/backuper"
-use_ip_in_path = os.getenv("backup_use_ip_in_path", "true") == "true"
+use_ip_in_path = os.getenv("backup_use_ip_in_path", "true") == "false"
 backup_name_unique_counter = 0
 stdout = open("/dev/null", "w") # sys.stdout
 
@@ -390,7 +390,7 @@ def restore_urls(state):
 # restore backup by backup URL and version
 # please note that archive keep absolute file names and extraction will work in the same way
 # if you want to extract to somewhere else, use second parameter
-def restore(url, version, password, to=""):
+def restore(url, version, password, to="", verify=False):
     parts = version.split(":")
     if len(parts) != 2:
         raise Exception("Incorrect version: " + version)
@@ -417,21 +417,23 @@ def restore(url, version, password, to=""):
         download(base + "/" + fname, work_dir + "/" + fname).run(stdout)
 
     # invoke zpaq
-    args = [get_script_dir() + "/zpaq", "extract", work_dir + "/a?????.zpaq", "-until", v,
+    zpaq_command = [get_script_dir() + "/zpaq", "extract", work_dir + "/a?????.zpaq", "-until", v,
             "-force"]
+    if verify:
+        zpaq_command += ["-test"]
 
     if to != "":
-        args += ["-to", to]
+        zpaq_command += ["-to", to]
 
     if password != "":
-        args += ["-key", password]
+        zpaq_command += ["-key", password]
 
-    subprocess.call(args)
-    pass
-
-
-def create_backup(url, password, config):
-    pass
+    with tempfile.NamedTemporaryFile(prefix="backuper-c-") as f:
+        try:
+            Proc(zpaq_command, "zpaq invocation failed").run(stdout, f)
+        except Exception as e:
+            f.seek(0)
+            sys.stderr.write(f.read())
 
 
 def pipe():
@@ -581,6 +583,7 @@ def help():
     sys.stderr.write("backup <url> <dirs>               Perform incremental backup on space-separated directories\n")
     sys.stderr.write("restore <url> <version> [target]  Restore backup at specified version. Files will be restored "
                      "under target\n")
+    sys.stderr.write("verify <url> <version>            Verify backup correctness at specified version.\n")
     sys.stderr.write("directory if provided, otherwise files will be restored inplace.\n")
     sys.stderr.write("\n")
     sys.stderr.write("If backup encryption is used, encryption password must be provided in backuper_key environment "
@@ -780,7 +783,12 @@ def cmd_restore(args):
         target = args[2]
 
     restore(url, version, psw(), target)
-    pass
+
+
+def cmd_verify(args):
+    url = normalize_url(args[0])
+    version = args[1]
+    restore(url, version, psw(), verify=True)
 
 
 commands = {
@@ -790,7 +798,8 @@ commands = {
     "delete": [cmd_delete, 1, 1],
     "list": [cmd_list, 1, 1],
     "backup": [cmd_backup, 2, None],
-    "restore": [cmd_restore, 2, 3]
+    "restore": [cmd_restore, 2, 3],
+    "verify": [cmd_verify, 2, 2]
 }
 
 

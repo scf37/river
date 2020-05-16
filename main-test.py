@@ -201,16 +201,16 @@ class MyTest(unittest.TestCase):
             self.assertEqual(sorted(os.listdir(files_dir)), sorted(map(lambda a: str(a) + ".file", range(1, n + 1))))
 
         import subprocess
-        subprocess.call(["bash", "-c", "rm " + files_dir + "/*"])
+        subprocess.call(["bash", "-c", "rm -f " + files_dir + "/*"])
         assert_content(0)
 
         for n in range(1, 11):
-            subprocess.call(["bash", "-c", "rm " + files_dir + "/*"])
+            subprocess.call(["bash", "-c", "rm -f " + files_dir + "/*"])
             main.restore(self.remote_url(), urls[n - 1]["version"], self.password)
             assert_content(n)
 
         for n in range(10, 0, -1):
-            subprocess.call(["bash", "-c", "rm " + files_dir + "/*"])
+            subprocess.call(["bash", "-c", "rm -f " + files_dir + "/*"])
             main.restore(self.remote_url(), urls[n - 1]["version"], self.password)
             assert_content(n)
 
