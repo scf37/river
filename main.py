@@ -14,7 +14,7 @@ import fcntl
 import hashlib
 import re
 
-work_dir = "/data/work"
+work_dir = "/tmp/backuper"
 use_ip_in_path = os.getenv("backup_use_ip_in_path", "true") == "true"
 backup_name_unique_counter = 0
 stdout = open("/dev/null", "w") # sys.stdout
@@ -202,10 +202,11 @@ def compress(tmp_dir, options):
 #
 #  last_backup_timestamp: long
 #  full_backups[].name
+#  full_backups[].index_version: string
 #  full_backups[].incremental_backups[] # incremental backup timestamp
 #  upload.files_uploaded[]
 #  upload.files_left[]
-#  index_version: string
+
 def load_state(url, password):
     with pipe() as p:
         with tempfile.NamedTemporaryFile(prefix="backuper-c-") as f:
@@ -219,7 +220,10 @@ def load_state(url, password):
                 download(url + "/index.yaml", p).pipe(Proc.sink("/dev/null")) \
                     .par(Proc.source(p)).run(f)
             f.seek(0)
-            return yaml.safe_load(f.read())
+            result = yaml.safe_load(f.read())
+            if "full_backups" not in result:
+                raise Exception("State is encrypted, password required")
+            return result
 
 
 def save_state(url, state, password):
@@ -272,9 +276,9 @@ def roll_full_backup(url, state, password):
         nm = new_full_backup_name()
         state["full_backups"].append({
             "name": nm,
+            "index_version": "",
             "incremental_backups": []
         })
-        state["index_version"] = ""
 
     if len(state["full_backups"]) == 0:  # no backups at all? start new one!
         start_new_full_backup()
@@ -334,8 +338,8 @@ def perform_backup(url, dirs, password):
 
     if not is_upload_in_progress:
         clean_local_dir()
-        if state["index_version"] != "":
-            download(remote_index(state["index_version"]), local_dir + "/" + index_file).run(stdout)
+        if current_full_backup["index_version"] != "":
+            download(remote_index(current_full_backup["index_version"]), local_dir + "/" + index_file).run(stdout)
         compress(local_dir, dirs + collect_options(state["local"], password))
         files = filter(lambda f: os.path.isfile(local_dir + "/" + f) and f != index_file, os.listdir(local_dir))
         state["upload"] = {"files_uploaded": [], "files_left": files}
@@ -350,12 +354,12 @@ def perform_backup(url, dirs, password):
         state["upload"]["files_uploaded"].append(f)
         save_state(url, state, password)
 
-    index_version_old = state["index_version"]
+    index_version_old = current_full_backup["index_version"]
     index_version_new = str(time.time())
 
     upload(local_dir + "/" + index_file, remote_index(index_version_new)).run(stdout)
 
-    state["index_version"] = index_version_new
+    current_full_backup["index_version"] = index_version_new
 
     # totally commit
     state["last_backup_timestamp"] = int(time.time())
@@ -396,7 +400,16 @@ def restore(url, version, password, to=""):
     work_dir = full_local_dir(url) + "/restore"
 
     state = load_state(url, password)
-    download(base + "/a00000.zpaq." + state["index_version"], work_dir + "/a00000.zpaq").run(stdout)
+
+    current_full_backup = None
+    for bkp in state["full_backups"]:
+        if bkp["name"] == name:
+            current_full_backup = bkp
+
+    if current_full_backup is None:
+        raise Exception("Full backup not found, invalid url?")
+
+    download(base + "/a00000.zpaq." + current_full_backup["index_version"], work_dir + "/a00000.zpaq").run(stdout)
 
     # download archives
     for i in range(1, int(v) + 1):
@@ -446,7 +459,6 @@ def main():
         "keep_full_backup_count": 3,
         "last_backup_timestamp": 0,
         "full_backups": [],
-        "index_version": ""
     }, "password")
     print(load_state("local:.", "password"))
     return
@@ -653,6 +665,16 @@ def update_config(state, cfg):
     state["use_encryption"] = cfg["use_encryption"]
 
 
+def extract_config(state):
+    return {
+        "exclude": state["local"]["exclude"],
+        "include_only": state["local"]["include_only"],
+        "keep_incremental_backup_count": state["keep_incremental_backup_count"],
+        "keep_full_backup_count": state["keep_full_backup_count"],
+        "use_encryption": state["use_encryption"]
+    }
+
+
 def cmd_create_config(args):
     if os.path.exists(args[0]):
         fail("File " + args[0] + " already exists, refusing to overwrite")
@@ -679,7 +701,6 @@ def cmd_create(args):
         "keep_full_backup_count": 3,
         "last_backup_timestamp": 0,
         "full_backups": [],
-        "index_version": "",
         "use_encryption": False
     }
 
@@ -730,14 +751,35 @@ def cmd_delete(args):
 
 
 def cmd_list(args):
-    pass
+    url = normalize_url(args[0])
+    state = load_state(url, psw())
+    config = extract_config(state)
+    versions = restore_urls(state)
+    print("Configuration")
+    print("")
+    print(yaml.dump(config))
+    print("Available backup versions")
+    print("")
+    print("Version                  \tTimestamp")
+    for v in versions:
+        print(v["version"] + "\t" + v["date"])
 
 
 def cmd_backup(args):
-    pass
+    url = normalize_url(args[0])
+    dirs = args[1:]
+    perform_backup(url, dirs, psw())
 
 
 def cmd_restore(args):
+    url = normalize_url(args[0])
+    version = args[1]
+    if len(args) < 3:
+        target = ""
+    else:
+        target = args[2]
+
+    restore(url, version, psw(), target)
     pass
 
 
@@ -748,7 +790,7 @@ commands = {
     "delete": [cmd_delete, 1, 1],
     "list": [cmd_list, 1, 1],
     "backup": [cmd_backup, 2, None],
-    "restore": [cmd_restore, 3, None]
+    "restore": [cmd_restore, 2, 3]
 }
 
 

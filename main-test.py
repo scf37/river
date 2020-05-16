@@ -171,7 +171,7 @@ class MyTest(unittest.TestCase):
                 "exclude": [],
                 "include_only": []
             },
-            "keep_incremental_backup_count": 10,
+            "keep_incremental_backup_count": 4,
             "keep_full_backup_count": 3,
 
             "last_backup_timestamp": 0,
