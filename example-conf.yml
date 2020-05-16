@@ -1,9 +1,0 @@
-name: "test"
-local:
-  dirs: ["/backup/test"]
-  exclude: []
-  include_only: []
-remote: ""
-keep_incremental_backup_count: 5
-keep_full_backup_count: 10
-backup_rate: 10m

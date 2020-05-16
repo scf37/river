@@ -4,20 +4,17 @@ import os
 import subprocess
 import yaml
 import datetime
-import time
-import logging
 import sys
 import shutil
 import tempfile
 import time
 import fcntl
-import hashlib
 import re
 
 work_dir = "/tmp/backuper"
 use_ip_in_path = os.getenv("backup_use_ip_in_path", "true") == "false"
 backup_name_unique_counter = 0
-stdout = open("/dev/null", "w") # sys.stdout
+stdout = open("/dev/null", "w")  # sys.stdout
 
 # backup config yaml format:
 #
@@ -136,6 +133,7 @@ def parse_url(url):
     i = url.find(":")
     if i < 0:
         raise Exception("illegal url: " + url)
+
     class Url:
         def __init__(self):
             self.protocol = url[0:i]
@@ -185,14 +183,6 @@ def compress(tmp_dir, options):
         except Exception as e:
             f.seek(0)
             sys.stderr.write(f.read())
-
-    # p = subprocess.Popen(zpaq_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    # out, _ = p.communicate()
-    # p.poll()
-    #
-    # if p.returncode != 0:
-    #     sys.stderr.write(out)
-    #     raise IOError("zpaq invocation failed")
 
 
 # local.exclude[]                array of exclusions
@@ -345,7 +335,6 @@ def perform_backup(url, dirs, password):
         state["upload"] = {"files_uploaded": [], "files_left": files}
     else:
         files = state["upload"]["files_left"]
-#        log_info("Resuming upload, files left are: " + str(state["upload"]["files_left"]))
 
     save_state(url, state, password)
     for f in files:
@@ -366,10 +355,9 @@ def perform_backup(url, dirs, password):
     current_full_backup["incremental_backups"].append(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     save_state(url, state, password)
 
-    delete(remote_index(index_version_old)).run(stdout)
+    delete(remote_index(index_version_old)).pipe(Proc.sink("/dev/null")).run(stdout)
 
     clean_local_dir()
-#    log_info("Backup " + url + " complete")
 
 
 # [].version
@@ -418,7 +406,7 @@ def restore(url, version, password, to="", verify=False):
 
     # invoke zpaq
     zpaq_command = [get_script_dir() + "/zpaq", "extract", work_dir + "/a?????.zpaq", "-until", v,
-            "-force"]
+                    "-force"]
     if verify:
         zpaq_command += ["-test"]
 
@@ -431,13 +419,16 @@ def restore(url, version, password, to="", verify=False):
     with tempfile.NamedTemporaryFile(prefix="backuper-c-") as f:
         try:
             Proc(zpaq_command, "zpaq invocation failed").run(stdout, f)
-        except Exception as e:
+        except Exception:
             f.seek(0)
             sys.stderr.write(f.read())
 
 
 def pipe():
     class Pipe:
+        def __init__(self):
+            pass
+
         def __enter__(self):
             f = tempfile.NamedTemporaryFile(prefix="backuper-p-")
             f.close()
@@ -450,79 +441,6 @@ def pipe():
 
     return Pipe()
 
-
-def main():
-    save_state("local:.", {
-        "local": {
-            "exclude": ["*.tmp"],
-            "include_only": [],
-        },
-        "keep_incremental_backup_count": 10,
-        "keep_full_backup_count": 3,
-        "last_backup_timestamp": 0,
-        "full_backups": [],
-    }, "password")
-    print(load_state("local:.", "password"))
-    return
-
-    p1 = Proc(["bash", "-c", "sleep 1; echo hello"], "p1 failed")
-    p2 = Proc(["bash", "-c", "echo world"], "p2 failed")
-
-    s0 = Proc(["cat", "/home/asm/replay_pid12823.log"], "s0 failed")
-    s1 = Proc(["gzip"], "s1 failed")
-    s2 = Proc(["gzip", "-d"], "s2 failed")
-
-    s0.pipe(s1).pipe(s2).pipe(Proc.sink("1")).run(stdout)
-
-    Proc.string_source("hello, world!").pipe(Proc(["base64"])).run(stdout)
-
-    p1.par(p2).run(stdout)
-
-    return
-    pr = subprocess.Popen(["bash", "-c", "echo hello | gzip"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    fd = pr.stdout.fileno()
-    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-
-    hasData = True
-    while pr.poll() is None or hasData:
-        try:
-            s = pr.stdout.read(50)
-            if len(s) > 0:
-                sys.stdout.write(s)
-            if pr.poll() is not None and len(s) == 0:
-                hasData = False
-        except IOError:
-            pass
-        time.sleep(0.1)
-    return
-
-    with string_pipe("hello, world!") as p:
-        print(execute(["cat", p]))
-
-    return
-
-    print(executes([["sleep", "1s"], ["sleep", "5s"]], sys.stdout))
-    return
-
-
-    # aws cli does not like empty access keys - so if they are missing, unset them!
-    unset_if_empty("AWS_ACCESS_KEY_ID")
-    unset_if_empty("AWS_SECRET_ACCESS_KEY")
-
-    # conf = load_backup_configs()
-    # if len(conf) == 0:
-    #     log_warn("No configuration files loaded")
-
-    tick = 0
-    while True:
-        process_backup_tasks()
-
-        if tick % 60 == 0:
-            process_scheduled_backups()
-
-        time.sleep(1)
-        tick += 1
 
 # backuper configuration file:
 # exclude: []
@@ -564,6 +482,7 @@ keep_full_backup_count: 3
 use_encryption: false
 """
 
+
 def help():
     sys.stderr.write("Usage: backuper.py [-v] <command> [backup url, if applicable] <command arguments>\n")
     sys.stderr.write("Backups directories to remote locations, supporting incremental backups,\n")
@@ -592,7 +511,7 @@ def help():
 
 def help_on_error(result):
     if result is not None and "error" in result:
-        sys.stderr.write("error: " + cmd["error"] + "\n")
+        sys.stderr.write("error: " + result["error"] + "\n")
         sys.stderr.write("\n")
         help()
         sys.exit(1)
@@ -653,7 +572,6 @@ def update_config(state, cfg):
     def check(name, tpe):
         if not isinstance(cfg[name], tpe):
             fail(name + " must be " + tpe)
-
 
     check_list("exclude")
     check_list("include_only")
@@ -803,9 +721,13 @@ commands = {
 }
 
 
-if __name__ == "__main__":
-    cmd = parse_command(sys.argv)
-    help_on_error(cmd)
+def main():
+    command = parse_command(sys.argv)
+    help_on_error(command)
 
-    result = cmd["cmd"](cmd["params"])
-    help_on_error(result)
+    r = command["cmd"](command["params"])
+    help_on_error(r)
+
+
+if __name__ == "__main__":
+    main()

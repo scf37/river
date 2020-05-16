@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 import unittest
-import main
+import backuper
 import os
 import time
 import yaml
@@ -22,11 +22,11 @@ class MyTest(unittest.TestCase):
 
     def setUp(self):
         self.base = str(time.time())
-        main.work_dir = "/tmp/backuper-test-" + self.base + "/work"
-        main.log_file_name = "./backuper.log"
+        backuper.work_dir = "/tmp/backuper-test-" + self.base + "/work"
+        backuper.log_file_name = "./backuper.log"
 
     def test_get_ip_address(self):
-        self.assertNotEqual(main.get_ip_address(), "")
+        self.assertNotEqual(backuper.get_ip_address(), "")
 
     def test_state_save_load(self):
         state0 = {
@@ -39,8 +39,8 @@ class MyTest(unittest.TestCase):
             "last_backup_timestamp": 0,
             "full_backups": []
         }
-        main.save_state(self.remote_url(), state0, self.password)
-        state = main.load_state(self.remote_url(), self.password)
+        backuper.save_state(self.remote_url(), state0, self.password)
+        state = backuper.load_state(self.remote_url(), self.password)
         self.assertIsNotNone(state)
         self.assertIn("last_backup_timestamp", state)
         self.assertIn("full_backups", state)
@@ -48,16 +48,16 @@ class MyTest(unittest.TestCase):
 
         state["last_backup_timestamp"] = 123
 
-        main.save_state(self.remote_url(), state, self.password)
-        state = main.load_state(self.remote_url(), self.password)
+        backuper.save_state(self.remote_url(), state, self.password)
+        state = backuper.load_state(self.remote_url(), self.password)
         self.assertEqual(state["last_backup_timestamp"], 123)
 
-        main.save_state(self.remote_url() + "2", state0, self.password)
+        backuper.save_state(self.remote_url() + "2", state0, self.password)
 
-        self.assertNotEqual(main.load_state(self.remote_url() + "2", self.password)["last_backup_timestamp"], 123)
+        self.assertNotEqual(backuper.load_state(self.remote_url() + "2", self.password)["last_backup_timestamp"], 123)
 
     def test_collect_options(self):
-        args = main.collect_options({
+        args = backuper.collect_options({
             "exclude": ["*.tmp", "*.jar"],
             "include_only": ["a*", "b?"]
         }, "")
@@ -88,25 +88,25 @@ class MyTest(unittest.TestCase):
 
         def assert_full_backup_is_sane(full_backup_name):
             base = "1/" \
-                   + main.get_ip_address() + "/" + full_backup_name
+                   + backuper.get_ip_address() + "/" + full_backup_name
             assert_exists(base + "/" + "a00001.zpaq")
 
         os.makedirs(dirs[0])
         url = self.remote_url() + "1"
 
-        main.save_state(url, state, self.password)
+        backuper.save_state(url, state, self.password)
 
         def perform_backup():
             with open(dirs[0] + "/some.file", "w") as f:
                 f.write("some content" + str(time.time()))
-            main.perform_backup(url, dirs, self.password)
+            backuper.perform_backup(url, dirs, self.password)
 
         perform_backup()
 
-        state = main.load_state(url, self.password)
+        state = backuper.load_state(url, self.password)
 
         # archive header and data is uploaded
-        remote_first_backup_base = "1/" + main.get_ip_address() + "/" + state["full_backups"][0]["name"]
+        remote_first_backup_base = "1/" + backuper.get_ip_address() + "/" + state["full_backups"][0]["name"]
         assert_full_backup_is_sane(state["full_backups"][0]["name"])
 
         # backup timestamp changed
@@ -121,7 +121,7 @@ class MyTest(unittest.TestCase):
         for _ in range(9):
             perform_backup()
 
-        state = main.load_state(url, self.password)
+        state = backuper.load_state(url, self.password)
 
         # state contains one full backup and 10 incremental ones
         self.assertEqual(len(state["full_backups"]), 1)
@@ -134,7 +134,7 @@ class MyTest(unittest.TestCase):
         # rolling out another full backup
         perform_backup()
 
-        state = main.load_state(url, self.password)
+        state = backuper.load_state(url, self.password)
 
         # it is on disk
         assert_full_backup_is_sane(state["full_backups"][1]["name"])
@@ -155,7 +155,7 @@ class MyTest(unittest.TestCase):
         # start FOURTH full backup
         perform_backup()
 
-        state = main.load_state(url, self.password)
+        state = backuper.load_state(url, self.password)
 
         # first full backup should be deleted by now
         self.assertEqual(len(state["full_backups"]), 3)
@@ -178,23 +178,23 @@ class MyTest(unittest.TestCase):
             "full_backups": []
         }
 
-        main.save_state(self.remote_url(), state, self.password)
+        backuper.save_state(self.remote_url(), state, self.password)
 
-        state = main.load_state(self.remote_url(), self.password)
+        state = backuper.load_state(self.remote_url(), self.password)
         files_dir = self.base_dir() + "/source"
         os.makedirs(files_dir)
 
         def perform_backup(n):
             with open(files_dir + "/" + str(n) + ".file", "w") as f:
                 f.write(str(n))
-            main.perform_backup(self.remote_url(), [files_dir], self.password)
+            backuper.perform_backup(self.remote_url(), [files_dir], self.password)
 
         for n in range(1, 11):
             perform_backup(n)
 
-        state = main.load_state(self.remote_url(), self.password)
+        state = backuper.load_state(self.remote_url(), self.password)
 
-        urls = main.restore_urls(state)
+        urls = backuper.restore_urls(state)
         self.assertEqual(len(urls), 10)
 
         def assert_content(n):
@@ -206,12 +206,12 @@ class MyTest(unittest.TestCase):
 
         for n in range(1, 11):
             subprocess.call(["bash", "-c", "rm -f " + files_dir + "/*"])
-            main.restore(self.remote_url(), urls[n - 1]["version"], self.password)
+            backuper.restore(self.remote_url(), urls[n - 1]["version"], self.password)
             assert_content(n)
 
         for n in range(10, 0, -1):
             subprocess.call(["bash", "-c", "rm -f " + files_dir + "/*"])
-            main.restore(self.remote_url(), urls[n - 1]["version"], self.password)
+            backuper.restore(self.remote_url(), urls[n - 1]["version"], self.password)
             assert_content(n)
 
 

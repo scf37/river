@@ -1,0 +1,13 @@
+#!/bin/bash
+
+if [ "$#" != "1" ]; then
+    echo "usage: delete user@host:<remote file/directory to delete>" > /dev/stderr
+    exit 1
+fi
+
+host=$(echo "$1" | cut -d ":" -f 1)
+file=$(echo "$1" | cut -d ":" -f 2)
+
+if [ "$file" != "" ] && [ "$file" != "/" ] && [ "$file" != "." ]; then
+    ssh $host "rm -rf $file"
+fi

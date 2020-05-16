@@ -1,0 +1,17 @@
+#!/bin/bash
+
+set -e
+set -o pipefail
+
+if [ "$#" != "2" ]; then
+    echo "Usage: upload <from-file> user@host:<to-file>" > /dev/stderr
+    exit 1
+fi
+
+echo "Uploading $1 -> $2"
+
+host=$(echo "$2" | cut -d ":" -f 1)
+file=$(echo "$2" | cut -d ":" -f 2)
+path=$(dirname $file)
+
+cat $1 | ssh $host "mkdir -p $path;cat > $file"

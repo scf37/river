@@ -1,5 +1,0 @@
-changes:
-- compression to remove archive (with index) is now streaming
-- archive header file extracted to separate hdr file
-- decompressor now supports hdr files
-- encryption is tested to be working on multipart incremental backups

@@ -1,0 +1,18 @@
+#!/bin/bash
+
+set -e
+set -o pipefail
+
+if [ "$#" != "2" ]; then
+    echo "Usage: download user@host:<from-file> <to-file>"
+    exit 1
+fi
+
+echo "Downloading $1 -> $2"
+
+mkdir -p $(dirname $2)
+
+host=$(echo "$1" | cut -d ":" -f 1)
+file=$(echo "$1" | cut -d ":" -f 2)
+
+ssh $host "cat $file" | cat > $2
