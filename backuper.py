@@ -502,8 +502,8 @@ def help():
     sys.stderr.write("backup <url> <dirs>               Perform incremental backup on space-separated directories\n")
     sys.stderr.write("restore <url> <version> [target]  Restore backup at specified version. Files will be restored "
                      "under target\n")
+    sys.stderr.write("                                  directory if provided, otherwise files will be restored inplace.\n")
     sys.stderr.write("verify <url> <version>            Verify backup correctness at specified version.\n")
-    sys.stderr.write("directory if provided, otherwise files will be restored inplace.\n")
     sys.stderr.write("\n")
     sys.stderr.write("If backup encryption is used, encryption password must be provided in backuper_key environment "
                      "variable.\n")
