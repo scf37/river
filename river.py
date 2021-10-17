@@ -11,7 +11,7 @@ import time
 import fcntl
 import re
 
-work_dir = "/tmp/backuper"
+work_dir = "/tmp/river"
 use_ip_in_path = os.getenv("backup_use_ip_in_path", "true") == "false"
 backup_name_unique_counter = 0
 stdout = open("/dev/null", "w")  # sys.stdout
@@ -185,12 +185,12 @@ def compress(tmp_dir, options):
                     "add",
                     tmp_dir + "/a?????"] + options + ["-index", tmp_dir + "/" + index_file]
 
-    with tempfile.NamedTemporaryFile(prefix="backuper-c-") as f:
+    with tempfile.NamedTemporaryFile(prefix="river-c-") as f:
         try:
             Proc(zpaq_command, "zpaq invocation failed").run(stdout, f)
         except Exception as e:
             f.seek(0)
-            sys.stderr.write(f.read())
+            sys.stderr.write(f.read().decode('utf-8'))
 
 
 # local.exclude[]                array of exclusions
@@ -207,7 +207,7 @@ def compress(tmp_dir, options):
 
 def load_state(url, password):
     with pipe() as p:
-        with tempfile.NamedTemporaryFile(prefix="backuper-c-") as f:
+        with tempfile.NamedTemporaryFile(prefix="river-c-") as f:
             if password != "":
                 download(url + "/index.yaml", p).pipe(Proc.sink("/dev/null")) \
                     .par(Proc.source(p)
@@ -424,7 +424,7 @@ def restore(url, version, password, to="", verify=False):
     if password != "":
         zpaq_command += ["-key", password]
 
-    with tempfile.NamedTemporaryFile(prefix="backuper-c-") as f:
+    with tempfile.NamedTemporaryFile(prefix="river-c-") as f:
         try:
             Proc(zpaq_command, "zpaq invocation failed").run(stdout, f)
         except Exception:
@@ -438,7 +438,7 @@ def pipe():
             pass
 
         def __enter__(self):
-            f = tempfile.NamedTemporaryFile(prefix="backuper-p-")
+            f = tempfile.NamedTemporaryFile(prefix="river-p-")
             f.close()
             self.fname = f.name
             Proc(["mkfifo", self.fname]).run(stdout)
@@ -450,24 +450,24 @@ def pipe():
     return Pipe()
 
 
-# backuper configuration file:
+# river configuration file:
 # exclude: []
 # include_only: []
 # keep_incremental_backup_count  how many incremental backups to keep
 # keep_full_backup_count         how many full backups to keep
 
-# backuper commands:
-# create-config <config file>
-# create <url> <config file>
-# update <url> <config file>
+# river commands:
+# new-config <config <file> or ->
+# create <url> <config file or ->
+# update <url> <config file or ->
 # delete <url>
 # list <url>
 # backup <url> <dir(s) to backup>
 # restore <url> <version> [target directory]
 
 
-example_config = """# This is backuper conflguration file
-# Pass it to 'backuper create' or 'backuper update' command
+example_config = """# This is river configuration file
+# Pass it to 'river create' or 'river update' command
 
 # Comma-separated masks of files to exclude
 # Example: ["*.tmp", "*/junk/*"]
@@ -478,7 +478,7 @@ exclude: []
 include_only: []
 
 # How many incremental backups to keep within single full backup
-# When this limit reached, new full backup will be started
+# When this limit is reached, new full backup will be started
 keep_incremental_backup_count: 30
 
 # How many full backups to keep
@@ -486,13 +486,13 @@ keep_incremental_backup_count: 30
 keep_full_backup_count: 3
 
 # Encrypt backups if true
-# Encryption key must be passed to backuper via backuper_key environment variable
+# Encryption key must be passed to river via river_key environment variable
 use_encryption: false
 """
 
 
 def help():
-    sys.stderr.write("Usage: backuper.py [-v] <command> [backup url, if applicable] <command arguments>\n")
+    sys.stderr.write("Usage: river.py [-v] <command> [backup url, if applicable] <command arguments>\n")
     sys.stderr.write("Backups directories to remote locations, supporting incremental backups,\n")
     sys.stderr.write("  compression, encryption, backup rolling and easy custom connectors.\n")
     sys.stderr.write("\n")
@@ -501,9 +501,9 @@ def help():
     sys.stderr.write("  directory which contains connector scripts.\n")
     sys.stderr.write("\n")
     sys.stderr.write("Supported commands:\n")
-    sys.stderr.write("create-config <config file>       Create example backup configuration file\n")
-    sys.stderr.write("create <url> <config file>        Create new remote backup at this url with this config\n")
-    sys.stderr.write("update <url> <config file>        Update configuration of existing remote backup\n")
+    sys.stderr.write("new-config <config file>       Create example backup configuration file (use - for stdout)\n")
+    sys.stderr.write("create <url> <config file>        Create new remote backup at this url with this config (use - for stdin)\n")
+    sys.stderr.write("update <url> <config file>        Update configuration of existing remote backup (use - for stdin)\n")
     sys.stderr.write("delete <url>                      Delete remote backup, irreversibly\n")
     sys.stderr.write("list <url>                        Show remote backup configuration and available versions for "
                      "restore \n")
@@ -513,7 +513,7 @@ def help():
     sys.stderr.write("                                  directory if provided, otherwise files will be restored inplace.\n")
     sys.stderr.write("verify <url> <version>            Verify backup correctness at specified version.\n")
     sys.stderr.write("\n")
-    sys.stderr.write("If backup encryption is used, encryption password must be provided in backuper_key environment "
+    sys.stderr.write("If backup encryption is used, encryption password must be provided in river_key environment "
                      "variable.\n")
 
 
@@ -565,8 +565,8 @@ def normalize_url(url):
 
 
 def psw():
-    if "backuper_key" in os.environ:
-        return os.environ["backuper_key"]
+    if "river_key" in os.environ:
+        return os.environ["river_key"]
     else:
         return ""
 
@@ -605,6 +605,10 @@ def extract_config(state):
 
 
 def cmd_create_config(args):
+    if args[0] == '-':
+        print(example_config)
+        return
+
     if os.path.exists(args[0]):
         fail("File " + args[0] + " already exists, refusing to overwrite")
     with open(args[0], "w") as f:
@@ -615,11 +619,14 @@ def cmd_create_config(args):
 def cmd_create(args):
     url = normalize_url(args[0])
     cfg_file = args[1]
-    if not os.path.exists(cfg_file):
-        fail("Configuration file not found: " + cfg_file)
+    if cfg_file == '-':
+        cfg = yaml.safe_load(sys.stdin)
+    else:
+        if not os.path.exists(cfg_file):
+            fail("Configuration file not found: " + cfg_file)
 
-    with open(cfg_file) as f:
-        cfg = yaml.safe_load(f.read())
+        with open(cfg_file) as f:
+            cfg = yaml.safe_load(f.read())
 
     state = {
         "local": {
@@ -643,10 +650,10 @@ def cmd_create(args):
 
     if psw() != "":
         if not state["use_encryption"]:
-            fail("Password is provided via backuper_key env variable but encryption is disabled in config")
+            fail("Password is provided via river_key env variable but encryption is disabled in config")
     else:
         if state["use_encryption"]:
-            fail("Encryption is enabled in config but password not provided via backuper_key env variable")
+            fail("Encryption is enabled in config but password not provided via river_key env variable")
 
     save_state(url, state, psw())
 
@@ -654,11 +661,15 @@ def cmd_create(args):
 def cmd_update(args):
     url = normalize_url(args[0])
     cfg_file = args[1]
-    if not os.path.exists(cfg_file):
-        fail("Configuration file not found: " + cfg_file)
 
-    with open(cfg_file) as f:
-        cfg = yaml.safe_load(f.read())
+    if cfg_file == '-':
+        cfg = yaml.safe_load(sys.stdin)
+    else:
+        if not os.path.exists(cfg_file):
+            fail("Configuration file not found: " + cfg_file)
+
+        with open(cfg_file) as f:
+            cfg = yaml.safe_load(f.read())
 
     state = load_state(url, psw())
 
@@ -666,10 +677,10 @@ def cmd_update(args):
 
     if psw() != "":
         if not state["use_encryption"]:
-            fail("Password is provided via backuper_key env variable but encryption is disabled in config")
+            fail("Password is provided via river_key env variable but encryption is disabled in config")
     else:
         if state["use_encryption"]:
-            fail("Encryption is enabled in config but password not provided via backuper_key env variable")
+            fail("Encryption is enabled in config but password not provided via river_key env variable")
 
     save_state(url, state, psw())
 
@@ -718,7 +729,7 @@ def cmd_verify(args):
 
 
 commands = {
-    "create-config": [cmd_create_config, 1, 1],
+    "new-config": [cmd_create_config, 1, 1],
     "create": [cmd_create, 2, 2],
     "update": [cmd_update, 2, 2],
     "delete": [cmd_delete, 1, 1],

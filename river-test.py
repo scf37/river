@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import unittest
-import backuper
+import river
 import os
 import time
 import yaml
@@ -10,10 +10,10 @@ class MyTest(unittest.TestCase):
     base = ""
 
     def remote_dir(self):
-        return "/tmp/backuper-test-" + self.base + "/remote"
+        return "/tmp/river-test-" + self.base + "/remote"
 
     def base_dir(self):
-        return "/tmp/backuper-test-" + self.base
+        return "/tmp/river-test-" + self.base
 
     def remote_url(self):
         return "local:" + self.remote_dir()
@@ -22,11 +22,11 @@ class MyTest(unittest.TestCase):
 
     def setUp(self):
         self.base = str(time.time())
-        backuper.work_dir = "/tmp/backuper-test-" + self.base + "/work"
-        backuper.log_file_name = "./backuper.log"
+        river.work_dir = "/tmp/river-test-" + self.base + "/work"
+        river.log_file_name = "./river.log"
 
     def test_get_ip_address(self):
-        self.assertNotEqual(backuper.get_ip_address(), "")
+        self.assertNotEqual(river.get_ip_address(), "")
 
     def test_state_save_load(self):
         state0 = {
@@ -39,8 +39,8 @@ class MyTest(unittest.TestCase):
             "last_backup_timestamp": 0,
             "full_backups": []
         }
-        backuper.save_state(self.remote_url(), state0, self.password)
-        state = backuper.load_state(self.remote_url(), self.password)
+        river.save_state(self.remote_url(), state0, self.password)
+        state = river.load_state(self.remote_url(), self.password)
         self.assertIsNotNone(state)
         self.assertIn("last_backup_timestamp", state)
         self.assertIn("full_backups", state)
@@ -48,30 +48,30 @@ class MyTest(unittest.TestCase):
 
         state["last_backup_timestamp"] = 123
 
-        backuper.save_state(self.remote_url(), state, self.password)
-        state = backuper.load_state(self.remote_url(), self.password)
+        river.save_state(self.remote_url(), state, self.password)
+        state = river.load_state(self.remote_url(), self.password)
         self.assertEqual(state["last_backup_timestamp"], 123)
 
-        backuper.save_state(self.remote_url() + "2", state0, self.password)
+        river.save_state(self.remote_url() + "2", state0, self.password)
 
-        self.assertNotEqual(backuper.load_state(self.remote_url() + "2", self.password)["last_backup_timestamp"], 123)
+        self.assertNotEqual(river.load_state(self.remote_url() + "2", self.password)["last_backup_timestamp"], 123)
 
     def test_collect_options(self):
-        args = backuper.collect_options({
+        args = river.collect_options({
             "exclude": ["*.tmp", "*.jar"],
             "include_only": ["a*", "b?"]
         }, "")
         self.assertEqual(args, "-not *.tmp -not *.jar -only a* -only b?".split(" "))
 
     def test_perform_backup(self):
-        backuper.use_ip_in_path = True
+        river.use_ip_in_path = True
 
         def assert_exists(fname):
             p = self.remote_dir() + fname
             self.assertTrue(os.path.isfile(p), "File is missing: " + fname + " (" + p + ")")
 
         def assert_missing(fname):
-            p = "/tmp/backuper-test-" + self.base + fname
+            p = "/tmp/river-test-" + self.base + fname
             self.assertFalse(os.path.isfile(p), "File exists: " + fname + " (" + p + ")")
 
         dirs = [self.base_dir() + "/source"]
@@ -89,25 +89,25 @@ class MyTest(unittest.TestCase):
 
         def assert_full_backup_is_sane(full_backup_name):
             base = "1/" \
-                   + backuper.get_ip_address() + "/" + full_backup_name
+                   + river.get_ip_address() + "/" + full_backup_name
             assert_exists(base + "/" + "a00001.zpaq")
 
         os.makedirs(dirs[0])
         url = self.remote_url() + "1"
 
-        backuper.save_state(url, state, self.password)
+        river.save_state(url, state, self.password)
 
         def perform_backup():
             with open(dirs[0] + "/some.file", "w") as f:
                 f.write("some content" + str(time.time()))
-            backuper.perform_backup(url, dirs, self.password)
+            river.perform_backup(url, dirs, self.password)
 
         perform_backup()
 
-        state = backuper.load_state(url, self.password)
+        state = river.load_state(url, self.password)
 
         # archive header and data is uploaded
-        remote_first_backup_base = "1/" + backuper.get_ip_address() + "/" + state["full_backups"][0]["name"]
+        remote_first_backup_base = "1/" + river.get_ip_address() + "/" + state["full_backups"][0]["name"]
         assert_full_backup_is_sane(state["full_backups"][0]["name"])
 
         # backup timestamp changed
@@ -122,7 +122,7 @@ class MyTest(unittest.TestCase):
         for _ in range(9):
             perform_backup()
 
-        state = backuper.load_state(url, self.password)
+        state = river.load_state(url, self.password)
 
         # state contains one full backup and 10 incremental ones
         self.assertEqual(len(state["full_backups"]), 1)
@@ -135,7 +135,7 @@ class MyTest(unittest.TestCase):
         # rolling out another full backup
         perform_backup()
 
-        state = backuper.load_state(url, self.password)
+        state = river.load_state(url, self.password)
 
         # it is on disk
         assert_full_backup_is_sane(state["full_backups"][1]["name"])
@@ -156,7 +156,7 @@ class MyTest(unittest.TestCase):
         # start FOURTH full backup
         perform_backup()
 
-        state = backuper.load_state(url, self.password)
+        state = river.load_state(url, self.password)
 
         # first full backup should be deleted by now
         self.assertEqual(len(state["full_backups"]), 3)
@@ -179,23 +179,23 @@ class MyTest(unittest.TestCase):
             "full_backups": []
         }
 
-        backuper.save_state(self.remote_url(), state, self.password)
+        river.save_state(self.remote_url(), state, self.password)
 
-        state = backuper.load_state(self.remote_url(), self.password)
+        state = river.load_state(self.remote_url(), self.password)
         files_dir = self.base_dir() + "/source"
         os.makedirs(files_dir)
 
         def perform_backup(n):
             with open(files_dir + "/" + str(n) + ".file", "w") as f:
                 f.write(str(n))
-            backuper.perform_backup(self.remote_url(), [files_dir], self.password)
+            river.perform_backup(self.remote_url(), [files_dir], self.password)
 
         for n in range(1, 11):
             perform_backup(n)
 
-        state = backuper.load_state(self.remote_url(), self.password)
+        state = river.load_state(self.remote_url(), self.password)
 
-        urls = backuper.restore_urls(state)
+        urls = river.restore_urls(state)
         self.assertEqual(len(urls), 10)
 
         def assert_content(n):
@@ -207,12 +207,12 @@ class MyTest(unittest.TestCase):
 
         for n in range(1, 11):
             subprocess.call(["bash", "-c", "rm -f " + files_dir + "/*"])
-            backuper.restore(self.remote_url(), urls[n - 1]["version"], self.password)
+            river.restore(self.remote_url(), urls[n - 1]["version"], self.password)
             assert_content(n)
 
         for n in range(10, 0, -1):
             subprocess.call(["bash", "-c", "rm -f " + files_dir + "/*"])
-            backuper.restore(self.remote_url(), urls[n - 1]["version"], self.password)
+            river.restore(self.remote_url(), urls[n - 1]["version"], self.password)
             assert_content(n)
 
 

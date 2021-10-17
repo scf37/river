@@ -1,0 +1,23 @@
+# This is river configuration file
+# Pass it to 'river create' or 'river update' command
+
+# Comma-separated masks of files to exclude
+# Example: ["*.tmp", "*/junk/*"]
+exclude: []
+
+# Comma-separated masks of files to include
+# Example: ["*.jpg"]
+include_only: []
+
+# How many incremental backups to keep within single full backup
+# When this limit is reached, new full backup will be started
+keep_incremental_backup_count: 30
+
+# How many full backups to keep
+# When this limit is reached, oldest backup will be deleted
+keep_full_backup_count: 3
+
+# Encrypt backups if true
+# Encryption key must be passed to river via river_key environment variable
+use_encryption: false
+
