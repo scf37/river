@@ -24,5 +24,5 @@ Run `backuper.py` without parameters to get built-in help
 Create backup configuration file via `create-config` command and see comments there
 ### Custom drivers
 Create new folder, it will be driver name, with 3 executables inside. See existing drivers for details.
-To work correcly, scripts should return non-zero exit code on error, stdout is only printed in verbose mode,
+To work correctly, scripts should return non-zero exit code on error, stdout is only printed in verbose mode,
 stderr is always printed on error

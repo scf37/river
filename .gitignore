@@ -1,6 +1,7 @@
 *.pyc
 .idea
-zpaq
 backuper.log
+backuper.spec
 *.o
 venv
+/build

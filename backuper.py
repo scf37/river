@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import os
 import subprocess
@@ -30,11 +30,14 @@ class Proc:
     # cmd: [] list for Popen
     # error: error string to include to exception if command fails
     # stdin: if set, write this string to stdin of created process
-    def __init__(self, cmd, error="", stdin=None):
+    def __init__(self, cmd, error=None, stdin=None):
         self.cmd = cmd
         self.error = error
         self.pipes = [[self]]
-        self.stdin = stdin
+        if isinstance(stdin, str):
+            self.stdin = bytearray(stdin, 'utf-8')
+        else:
+            self.stdin = stdin
 
     # pipe this proc to argument proc
     def pipe(self, proc):
@@ -60,8 +63,11 @@ class Proc:
                 code = par[0].poll()
                 if code is None:
                     has_running = True
-                elif code != 0 and error_msg is None:
-                    error_msg = par[1]
+                else:
+                    if par[0].stdout is not None:
+                        par[0].stdout.close()
+                    if code != 0 and error_msg is None:
+                        error_msg = par[1]
 
             if error_msg is not None:
                 for par in pars:
@@ -126,7 +132,9 @@ def get_ip_address():
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect(("8.8.8.8", 80))
-    return s.getsockname()[0]
+    addr = s.getsockname()[0]
+    s.close()
+    return addr
 
 
 def parse_url(url):
@@ -331,8 +339,8 @@ def perform_backup(url, dirs, password):
         if current_full_backup["index_version"] != "":
             download(remote_index(current_full_backup["index_version"]), local_dir + "/" + index_file).run(stdout)
         compress(local_dir, dirs + collect_options(state["local"], password))
-        files = filter(lambda f: os.path.isfile(local_dir + "/" + f) and f != index_file, os.listdir(local_dir))
-        state["upload"] = {"files_uploaded": [], "files_left": files}
+        files = list(filter(lambda f: os.path.isfile(local_dir + "/" + f) and f != index_file, os.listdir(local_dir)))
+        state["upload"] = {"files_uploaded": [], "files_left": list(files)}
     else:
         files = state["upload"]["files_left"]
 

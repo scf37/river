@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import unittest
 import backuper
 import os
@@ -64,6 +64,7 @@ class MyTest(unittest.TestCase):
         self.assertEqual(args, "-not *.tmp -not *.jar -only a* -only b?".split(" "))
 
     def test_perform_backup(self):
+        backuper.use_ip_in_path = True
 
         def assert_exists(fname):
             p = self.remote_dir() + fname
