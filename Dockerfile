@@ -17,6 +17,7 @@ RUN apt-get update && \
     rm -rf /tmp/*
 
 ADD river.py /opt
+ADD zpaq /opt
 ADD local /opt/local
 ADD ssh /opt/ssh
 ADD s3 /opt/s3
